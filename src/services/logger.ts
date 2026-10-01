@@ -1,0 +1,34 @@
+import pino, { type LoggerOptions } from 'pino';
+import { config } from '../config/config';
+
+/**
+ * Structured application logger. Never pass raw config/secret objects to
+ * this logger — log selective, non-sensitive fields only (see docs/SECURITY.md).
+ */
+const options: LoggerOptions = {
+  level: config.logLevel,
+  redact: {
+    paths: ['*.apiKey', '*.serviceRoleKey', '*.password', '*.token', 'req.headers.authorization'],
+    censor: '[REDACTED]',
+  },
+  base: {
+    env: config.env,
+  },
+};
+
+if (config.env === 'development') {
+  options.transport = {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'HH:MM:ss',
+      ignore: 'pid,hostname',
+    },
+  };
+}
+
+export const logger = pino(options);
+
+export function createChildLogger(scope: string) {
+  return logger.child({ scope });
+}

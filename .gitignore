@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# WhatsApp session / auth state (Phase 2+)
+auth/
+sessions/
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Media / temporary storage (Phase 8+)
+tmp/
+media-cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Coverage
+coverage/
