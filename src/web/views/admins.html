@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Admins</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <a class="nav-link active" href="/admins">Admins</a>
+        <a class="nav-link" href="/health">Health</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section style="margin-bottom: 28px">
+        <div class="section-head">
+          <h2>Owner</h2>
+        </div>
+        <p class="muted" style="font-size: 13px; margin-top: -8px">
+          The ultimate authority — can never be changed from this dashboard or any WhatsApp command,
+          only by editing <code>OWNER_WHATSAPP_NUMBERS</code> on the server. This is what makes
+          privilege escalation impossible: an admin can never promote themselves to owner.
+        </p>
+        <div class="card" style="padding: 16px">
+          <div id="owner-list"></div>
+          <p id="owner-empty" class="muted hidden" style="font-size: 13px; margin: 0">
+            No owner number configured — owner/admin commands will not work until
+            <code>OWNER_WHATSAPP_NUMBERS</code> is set.
+          </p>
+        </div>
+      </section>
+
+      <section style="margin-bottom: 28px">
+        <div class="section-head">
+          <h2>Environment-configured admins</h2>
+        </div>
+        <p class="muted" style="font-size: 13px; margin-top: -8px">
+          From <code>ADMIN_WHATSAPP_NUMBERS</code> on the server — read-only here. Add or remove
+          admins without a server restart using Dashboard Admins below instead.
+        </p>
+        <div class="card" style="padding: 16px">
+          <div id="env-admin-list"></div>
+          <p id="env-admin-empty" class="muted hidden" style="font-size: 13px; margin: 0">
+            None configured.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Dashboard Admins</h2>
+        </div>
+        <p class="muted" style="font-size: 13px; margin-top: -8px">
+          Granted full admin permissions in every group/contact for the account they're added to
+          (same as an environment-configured admin) — can use owner/admin-only commands, but can
+          never grant themselves or anyone else owner authority.
+        </p>
+        <div id="admins-error" class="error-text"></div>
+
+        <div class="card" style="padding: 18px; margin-bottom: 16px">
+          <div class="field">
+            <label class="field-label" for="admin-account">WhatsApp account</label>
+            <select id="admin-account"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="admin-phone">Phone number (digits only)</label>
+            <input type="tel" id="admin-phone" placeholder="15551234567" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="admin-label">Label (optional)</label>
+            <input type="text" id="admin-label" placeholder="e.g. Assistant manager" />
+          </div>
+          <button class="btn btn-primary btn-sm" id="add-admin-btn">+ Add Admin</button>
+        </div>
+
+        <div id="dashboard-admin-list" class="group-list"></div>
+        <div id="dashboard-admin-empty" class="empty-state hidden">
+          <p>No dashboard-managed admins yet.</p>
+        </div>
+        <div id="unconfigured-state" class="empty-state hidden">
+          <p>Dashboard-managed admins require Supabase to be configured.</p>
+          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/admins.js"></script>
+  </body>
+</html>

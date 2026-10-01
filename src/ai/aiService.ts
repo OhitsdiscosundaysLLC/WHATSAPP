@@ -24,6 +24,7 @@ const CLASSIFY_SYSTEM_POLICY =
 export interface AiCallContext {
   accountId: string;
   groupId: string | undefined;
+  contactId: string | undefined;
   ruleId: string | undefined;
   /** Short machine-readable reason, logged to whatsapp_ai_usage — e.g. 'auto_reply_generate'. */
   reason: string;
@@ -107,6 +108,7 @@ export class AIService {
       await this.aiUsageRepository.record({
         accountId: ctx.accountId,
         groupId: ctx.groupId,
+        contactId: ctx.contactId,
         ruleId: ctx.ruleId,
         reason: ctx.reason,
         model: model ?? 'unknown',

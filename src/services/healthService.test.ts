@@ -58,6 +58,19 @@ describe('getHealthReport', () => {
     );
   });
 
+  it('reports openai/storage component status without ever including the key itself', () => {
+    const r = report(status(), okDb, supabaseAuth);
+    expect(['ok', 'not_implemented']).toContain(r.components.openai.status);
+    expect(['ok', 'down']).toContain(r.components.storage.status);
+    const text = JSON.stringify(r);
+    expect(text).not.toMatch(/sk-/);
+  });
+
+  it('storage is reported down when the database itself is unavailable', () => {
+    const r = report(status(), unavailableDb, supabaseAuth);
+    expect(r.components.storage.status).toBe('down');
+  });
+
   it('never includes qr, pairingCode, or any credential/key material', () => {
     const r = report(status({ state: 'awaiting_qr' }), okDb, supabaseAuth);
     const text = JSON.stringify(r);

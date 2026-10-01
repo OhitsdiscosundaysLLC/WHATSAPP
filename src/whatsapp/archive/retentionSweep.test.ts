@@ -31,7 +31,7 @@ describe('runRetentionSweep', () => {
         quotedWhatsappMessageId: undefined,
         quotedParticipant: undefined,
       },
-      group.id,
+      { groupId: group.id },
     );
     await messagesRepository.markDeleted('acct-1', 'group@g.us', 'MSG1');
     // Backdate deleted_at well past the 7-day retention window.
@@ -65,7 +65,7 @@ describe('runRetentionSweep', () => {
         quotedWhatsappMessageId: undefined,
         quotedParticipant: undefined,
       },
-      group.id,
+      { groupId: group.id },
     );
     await messagesRepository.markDeleted('acct-1', 'group@g.us', 'MSG1');
     const rows = fake.rawRows('whatsapp_messages');

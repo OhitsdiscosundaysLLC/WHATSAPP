@@ -192,6 +192,8 @@ input:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 16px 24px;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -424,6 +426,7 @@ input:focus {
 .nav-links {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
 }
 

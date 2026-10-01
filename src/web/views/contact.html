@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Contact</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <meta name="contact-id" content="__CONTACT_ID__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link active" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <a class="nav-link" href="/admins">Admins</a>
+        <a class="nav-link" href="/health">Health</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <a class="back-link" href="/contacts">&larr; All contacts</a>
+      <div id="load-error" class="error-text"></div>
+
+      <div id="contact-content" class="hidden">
+        <section style="margin-bottom: 20px">
+          <h2 id="contact-subject" style="margin: 0 0 4px"></h2>
+          <p id="contact-meta" class="muted" style="margin: 0; font-size: 13px"></p>
+        </section>
+
+        <section class="card" style="padding: 16px; margin-bottom: 20px">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <div class="toggle-label-text">Blocked</div>
+              <div class="muted" style="font-size: 12px">
+                Stops ALL automation for this contact immediately — monitoring, AI, and auto-reply
+                all stop, regardless of their own settings below.
+              </div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="blocked-toggle" />
+              <span class="toggle-track"></span>
+              <span class="toggle-thumb"></span>
+            </label>
+          </div>
+          <div class="field" style="margin-top: 12px">
+            <label class="field-label" for="display-name">Display name</label>
+            <input type="text" id="display-name" placeholder="e.g. Alice (customer)" />
+            <button class="btn btn-sm" id="save-name-btn" style="margin-top: 8px">Save</button>
+          </div>
+        </section>
+
+        <div class="tabs" style="margin-bottom: 20px; flex-wrap: wrap">
+          <button class="tab-btn active" data-section-tab="general" type="button">General</button>
+          <button class="tab-btn" data-section-tab="ai" type="button">AI</button>
+          <button class="tab-btn" data-section-tab="rules" type="button">Auto Reply</button>
+          <button class="tab-btn" data-section-tab="archive" type="button">Archive</button>
+          <button class="tab-btn" data-section-tab="activity" type="button">Activity</button>
+        </div>
+
+        <!-- ---------- GENERAL ---------- -->
+        <section class="section-tab" data-section="general">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>General</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Monitoring stores this chat's messages (needed for the deleted-message archive).
+              Starts OFF — DMs are opt-in only, never monitored by default.
+            </p>
+            <div id="settings-error" class="error-text"></div>
+            <div id="general-toggles"></div>
+
+            <div style="margin-top: 16px">
+              <label class="field-label" for="contact-instructions">Custom instructions</label>
+              <p class="muted" style="font-size: 12px; margin: 0 0 6px">
+                Included as context for AI-generated replies to this contact (when AI is on).
+              </p>
+              <textarea
+                id="contact-instructions"
+                placeholder="e.g. This is a returning customer — be warm and concise."
+              ></textarea>
+              <button class="btn btn-sm" id="save-instructions-btn" style="margin-top: 8px">
+                Save
+              </button>
+            </div>
+          </section>
+        </section>
+
+        <!-- ---------- AI ---------- -->
+        <section class="section-tab hidden" data-section="ai">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>AI</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              AI never responds to this contact unless explicitly enabled here — monitoring being on
+              does NOT turn AI on.
+            </p>
+            <div id="ai-error" class="error-text"></div>
+            <div id="ai-toggles"></div>
+
+            <div class="field" style="margin-top: 16px">
+              <label class="field-label" for="ai-cooldown">AI cooldown (seconds, 0 = none)</label>
+              <input type="text" inputmode="numeric" id="ai-cooldown" value="0" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="ai-max-per-hour"
+                >Max AI responses per hour (blank = unlimited)</label
+              >
+              <input type="text" inputmode="numeric" id="ai-max-per-hour" placeholder="unlimited" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="ai-instructions">Custom AI instructions</label>
+              <textarea
+                id="ai-instructions"
+                placeholder="e.g. Keep replies under 2 sentences. Never discuss pricing."
+              ></textarea>
+            </div>
+            <button class="btn btn-sm" id="save-ai-btn">Save</button>
+          </section>
+        </section>
+
+        <!-- ---------- AUTO REPLY RULES ---------- -->
+        <section class="section-tab hidden" data-section="rules">
+          <section style="margin-bottom: 24px">
+            <div class="section-head">
+              <h2>Auto-Reply Rules</h2>
+              <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: -8px">
+              A DM has exactly one other participant, so only auto-reply rules apply here — no
+              distinct-responder threshold, no moderation.
+            </p>
+            <div id="rules-error" class="error-text"></div>
+
+            <div id="rule-form" class="card hidden" style="padding: 18px; margin-bottom: 14px">
+              <h3 style="margin: 0 0 12px; font-size: 15px">New auto-reply rule</h3>
+
+              <div class="field">
+                <label class="field-label" for="rule-name">Name</label>
+                <input type="text" id="rule-name" placeholder="e.g. Hours auto-reply" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="rule-classifier">Qualification method</label>
+                <select id="rule-classifier">
+                  <option value="deterministic">Keyword/phrase match</option>
+                  <option value="ai">
+                    AI semantic match (requires AI enabled for this contact)
+                  </option>
+                </select>
+              </div>
+              <div id="rule-fields-phrases">
+                <div class="field">
+                  <label class="field-label" for="rule-phrases"
+                    >Qualifying phrases (comma-separated)</label
+                  >
+                  <textarea
+                    id="rule-phrases"
+                    placeholder="hours, open, when are you open"
+                  ></textarea>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="rule-match-mode">Match mode</label>
+                  <select id="rule-match-mode">
+                    <option value="contains">Contains any phrase</option>
+                    <option value="exact">Exact match</option>
+                    <option value="keyword_any">Any whole word matches</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field hidden" id="rule-ai-instructions-field">
+                <label class="field-label" for="rule-ai-instructions"
+                  >Describe what qualifies (for AI)</label
+                >
+                <textarea
+                  id="rule-ai-instructions"
+                  placeholder="e.g. asks about opening hours"
+                ></textarea>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="rule-cooldown">Cooldown (seconds, 0 = none)</label>
+                <input type="text" inputmode="numeric" id="rule-cooldown" value="0" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="rule-action-type">Reply with</label>
+                <select id="rule-action-type">
+                  <option value="SEND_MESSAGE">A fixed message</option>
+                  <option value="AI_REPLY">An AI-generated reply</option>
+                </select>
+              </div>
+              <div class="field" id="rule-message-field">
+                <label class="field-label" for="rule-message">Message</label>
+                <textarea
+                  id="rule-message"
+                  placeholder="We are open 9am-5pm, Monday to Friday."
+                ></textarea>
+              </div>
+
+              <div class="rule-actions">
+                <button class="btn btn-primary btn-sm" id="save-rule-btn">Create Rule</button>
+                <button class="btn btn-ghost btn-sm" id="cancel-rule-btn">Cancel</button>
+              </div>
+            </div>
+
+            <div id="rule-list" class="group-list"></div>
+            <div id="rules-empty" class="empty-state hidden">
+              <p>No auto-reply rules yet for this contact.</p>
+            </div>
+          </section>
+        </section>
+
+        <!-- ---------- ARCHIVE ---------- -->
+        <section class="section-tab hidden" data-section="archive">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Deleted-Message Archive</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Only "delete for everyone" is observable by WhatsApp's protocol —
+              <strong>"delete for me" can never be detected or recovered</strong>. Requires
+              Monitoring to also be on.
+            </p>
+            <div id="archive-error" class="error-text"></div>
+            <div id="archive-toggles"></div>
+            <div class="field" style="margin-top: 12px">
+              <label class="field-label" for="retention-days">Retention</label>
+              <select id="retention-days">
+                <option value="">Disabled (keep forever)</option>
+                <option value="7">7 days</option>
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+              </select>
+            </div>
+            <button class="btn btn-sm" id="save-archive-btn" style="margin-top: 8px">Save</button>
+          </section>
+
+          <section>
+            <div class="section-head"><h3 style="margin: 0">Recently Deleted Messages</h3></div>
+            <div class="card">
+              <div id="deleted-list" class="activity-list"></div>
+              <div id="deleted-empty" class="empty-state hidden">
+                <p>No deleted messages archived yet.</p>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ---------- ACTIVITY ---------- -->
+        <section class="section-tab hidden" data-section="activity">
+          <section>
+            <div class="section-head">
+              <h2>Recent Activity</h2>
+            </div>
+            <div class="card">
+              <div id="activity-list" class="activity-list"></div>
+              <div id="activity-empty" class="empty-state hidden">
+                <p>No activity recorded yet for this contact.</p>
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script src="/contact.js"></script>
+  </body>
+</html>

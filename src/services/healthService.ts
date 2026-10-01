@@ -36,6 +36,10 @@ export interface HealthReport {
   components: {
     database: DatabaseHealth;
     whatsapp: WhatsAppComponentHealth;
+    /** Never more than "is a key present" — this process never spends a real OpenAI call just to report health. */
+    openai: { status: ComponentStatus };
+    /** Media archive storage shares the Supabase project configured for `database` — see docs/ARCHITECTURE.md. */
+    storage: { status: ComponentStatus };
   };
 }
 
@@ -70,6 +74,8 @@ export function getHealthReport({
       lastDisconnectedAt: whatsapp.lastDisconnectedAt,
       authPersistence,
     },
+    openai: { status: config.openai.configured ? 'ok' : 'not_implemented' },
+    storage: { status: database.status === 'ok' && config.supabase.configured ? 'ok' : 'down' },
   };
 
   // Liveness status: reflects whether the process itself is healthy, not

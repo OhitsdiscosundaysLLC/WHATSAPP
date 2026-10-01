@@ -1,6 +1,7 @@
 import type { MessageUpsertType, WAMessage } from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
 import type { AuditRepository } from '../../db/auditRepository';
+import type { ContactsRepository } from '../../db/contactsRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
 import type { IdentityMapRepository } from '../../db/identityMapRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
@@ -8,7 +9,9 @@ import type { RuleEngine } from '../../rules/ruleEngine';
 import {
   extractRevokedKey,
   handleDeletedMessage,
+  handlePrivateDeletedMessage,
   type DeletedMessageHandlerDeps,
+  type PrivateDeletedMessageHandlerDeps,
 } from '../archive/deletedMessageHandler';
 import {
   handleViewOnceMessage,
@@ -16,20 +19,27 @@ import {
   type ViewOnceHandlerDeps,
 } from '../archive/viewOnceHandler';
 import { tryHandleCommand, type CommandHandlerDeps } from '../commands/commandHandler';
+import {
+  tryHandlePrivateCommand,
+  type PrivateCommandHandlerDeps,
+} from '../commands/privateCommandHandler';
 import { extractIdentityCandidates, recordIdentityIfKnown } from '../identity/identityResolver';
-import { normalizeMessage } from './messageNormalizer';
+import { normalizeMessage, type NormalizedMessageEvent } from './messageNormalizer';
 
 export interface EventPipelineDeps {
   accountId: string;
   groupsRepository: GroupsRepository;
+  contactsRepository: ContactsRepository;
   messagesRepository: MessagesRepository;
   identityMapRepository: IdentityMapRepository;
   ruleEngine: RuleEngine;
   auditRepository: AuditRepository;
   /** `undefined` only in contexts with no Supabase/account wiring at all — never in production (see accountManager.ts). */
   deletedMessageHandlerDeps: Omit<DeletedMessageHandlerDeps, 'accountId'>;
+  privateDeletedMessageHandlerDeps: Omit<PrivateDeletedMessageHandlerDeps, 'accountId'>;
   viewOnceHandlerDeps: Omit<ViewOnceHandlerDeps, 'accountId'>;
   commandHandlerDeps: CommandHandlerDeps;
+  privateCommandHandlerDeps: PrivateCommandHandlerDeps;
   logger: Logger;
 }
 
@@ -85,13 +95,22 @@ export class EventPipeline {
         }).catch((err: unknown) =>
           this.deps.logger.error({ err }, 'Failed to process deleted-message event'),
         );
+      } else if (event.context === 'private') {
+        await handlePrivateDeletedMessage(revokedKey, event.chatJid, {
+          accountId: this.deps.accountId,
+          ...this.deps.privateDeletedMessageHandlerDeps,
+        }).catch((err: unknown) =>
+          this.deps.logger.error({ err }, 'Failed to process private deleted-message event'),
+        );
       }
       return;
     }
 
-    // Private-chat automation is explicitly out of scope / off by default
-    // in this phase (see product spec #6) — normalized and dedup-gated
-    // above, but nothing further happens for a private-chat message yet.
+    if (event.context === 'private') {
+      await this.handlePrivateMessage(event, waMessage);
+      return;
+    }
+
     if (event.context !== 'group' || !event.groupJid) return;
 
     const group = await this.deps.groupsRepository.getByJid(this.deps.accountId, event.groupJid);
@@ -110,7 +129,7 @@ export class EventPipeline {
     const settings = await this.deps.groupsRepository.ensureSettings(group.id);
 
     if (settings.monitoringEnabled) {
-      await this.deps.messagesRepository.store(event, group.id);
+      await this.deps.messagesRepository.store(event, { groupId: group.id });
     }
 
     if (isViewOnceMessageType(event.messageType)) {
@@ -167,5 +186,69 @@ export class EventPipeline {
     });
 
     await this.deps.ruleEngine.evaluate(event, group.id, settings);
+  }
+
+  /**
+   * DM-side equivalent of the group branch above — private-chat automation
+   * is opt-in only (product spec goal 6, docs/SECURITY.md). A contact is
+   * discovered lazily on its first message (mirroring group discovery) and
+   * always starts with safe-defaults (all-off) settings, so receiving a DM
+   * from someone new never starts automating anything for them.
+   *
+   * `blocked` is a hard, unconditional gate checked before anything else —
+   * monitoring, commands, and rule evaluation all stop immediately for a
+   * blocked contact, regardless of any other toggle.
+   */
+  private async handlePrivateMessage(
+    event: NormalizedMessageEvent,
+    waMessage: WAMessage,
+  ): Promise<void> {
+    const contact = await this.deps.contactsRepository.upsertDiscoveredContact(
+      this.deps.accountId,
+      event.chatJid,
+      undefined,
+    );
+    if (contact.blocked) return;
+
+    const settings = await this.deps.contactsRepository.ensureSettings(contact.id);
+
+    if (settings.privateMonitoringEnabled) {
+      await this.deps.messagesRepository.store(event, { contactId: contact.id });
+    }
+
+    const identityCandidates = extractIdentityCandidates(waMessage, false);
+    await recordIdentityIfKnown(
+      identityCandidates,
+      this.deps.accountId,
+      this.deps.identityMapRepository,
+    ).catch((err: unknown) =>
+      this.deps.logger.warn({ err }, 'Failed to record WhatsApp identity mapping'),
+    );
+
+    // Owner/admin DM commands run independent of privateAutoReplyEnabled —
+    // see src/whatsapp/commands/privateCommandHandler.ts. Never reachable
+    // by anyone but a configured owner/admin sender.
+    const handledAsCommand = await tryHandlePrivateCommand(
+      event,
+      contact,
+      identityCandidates,
+      this.deps.privateCommandHandlerDeps,
+    ).catch((err: unknown) => {
+      this.deps.logger.error({ err }, 'Private command handling threw');
+      return false;
+    });
+    if (handledAsCommand) return;
+
+    if (!settings.privateAutoReplyEnabled) return;
+
+    await this.deps.auditRepository.recordEvent({
+      accountId: this.deps.accountId,
+      groupId: undefined,
+      contactId: contact.id,
+      eventType: 'message.received',
+      detail: { messageType: event.messageType, scope: 'private' },
+    });
+
+    await this.deps.ruleEngine.evaluatePrivate(event, contact.id, settings);
   }
 }

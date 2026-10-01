@@ -1,5 +1,6 @@
 import { config } from './config/config';
 import { checkDatabaseHealth, getSupabaseClient } from './db/supabaseClient';
+import { ContactsRepository } from './db/contactsRepository';
 import { GroupsRepository } from './db/groupsRepository';
 import { MessagesRepository } from './db/messagesRepository';
 import { logger } from './services/logger';
@@ -61,6 +62,7 @@ function main() {
         new GroupsRepository(getSupabaseClient()),
         new MessagesRepository(getSupabaseClient()),
         logger,
+        new ContactsRepository(getSupabaseClient()),
       )
     : undefined;
 

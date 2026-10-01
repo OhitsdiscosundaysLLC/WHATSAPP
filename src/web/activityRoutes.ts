@@ -25,14 +25,15 @@ export function createActivityRouter(): Router {
       return;
     }
 
-    const query = req.query as { groupId?: string; limit?: string };
+    const query = req.query as { groupId?: string; contactId?: string; limit?: string };
     const limit = Math.min(Number(query.limit) || 50, MAX_LIMIT);
     const groupId = typeof query.groupId === 'string' ? query.groupId : undefined;
+    const contactId = typeof query.contactId === 'string' ? query.contactId : undefined;
 
     const auditRepository = new AuditRepository(getSupabaseClient());
     const [events, actions] = await Promise.all([
-      auditRepository.listRecent(limit, groupId),
-      auditRepository.listRecentActions(limit, groupId),
+      auditRepository.listRecent(limit, groupId, contactId),
+      auditRepository.listRecentActions(limit, groupId, contactId),
     ]);
 
     res.status(200).json({ events, actions });

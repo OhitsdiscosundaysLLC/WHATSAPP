@@ -1,6 +1,7 @@
 import { proto, type WAMessage } from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
 import type { AuditRepository } from '../../db/auditRepository';
+import type { ContactsRepository } from '../../db/contactsRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
 import type { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
@@ -101,6 +102,72 @@ export async function handleDeletedMessage(
       );
     } catch (err) {
       deps.logger.warn({ err, ownerJid }, 'Failed to notify owner of deleted message');
+    }
+  }
+}
+
+export interface PrivateDeletedMessageHandlerDeps {
+  accountId: string;
+  contactsRepository: ContactsRepository;
+  messagesRepository: MessagesRepository;
+  auditRepository: AuditRepository;
+  notificationCooldowns: NotificationCooldownRepository;
+  sender: MessageSender;
+  ownerJids: string[];
+  logger: Logger;
+}
+
+/**
+ * DM-side equivalent of `handleDeletedMessage` — same REVOKE detection,
+ * same opt-in gate (`private_deleted_message_archive_enabled` instead of
+ * `deleted_message_archive_enabled`), same cooldown-protected owner
+ * notification, just scoped to a contact instead of a group.
+ */
+export async function handlePrivateDeletedMessage(
+  revokedKey: RevokedMessageKey,
+  contactJid: string,
+  deps: PrivateDeletedMessageHandlerDeps,
+): Promise<void> {
+  const contact = await deps.contactsRepository.getByJid(deps.accountId, contactJid);
+  if (!contact) return;
+
+  const settings = await deps.contactsRepository.ensureSettings(contact.id);
+  if (!settings.privateDeletedMessageArchiveEnabled) return;
+
+  const found = await deps.messagesRepository.markDeleted(
+    deps.accountId,
+    revokedKey.remoteJid,
+    revokedKey.id,
+  );
+
+  await deps.auditRepository.recordEvent({
+    accountId: deps.accountId,
+    groupId: undefined,
+    contactId: contact.id,
+    eventType: 'message.deleted',
+    detail: {
+      whatsappMessageId: revokedKey.id,
+      senderJid: revokedKey.participant,
+      archived: found,
+    },
+  });
+
+  if (deps.ownerJids.length === 0) return;
+  const allowed = await deps.notificationCooldowns.tryNotify(
+    deps.accountId,
+    `deleted_message:contact:${contact.id}`,
+  );
+  if (!allowed) return;
+
+  const label = contact.displayName || contact.whatsappJid;
+  for (const ownerJid of deps.ownerJids) {
+    try {
+      await deps.sender.sendTextMessage(
+        ownerJid,
+        `A private message was deleted in a chat with "${label}".${found ? '' : ' (not archived — monitoring was off when it was sent)'}`,
+      );
+    } catch (err) {
+      deps.logger.warn({ err, ownerJid }, 'Failed to notify owner of deleted private message');
     }
   }
 }

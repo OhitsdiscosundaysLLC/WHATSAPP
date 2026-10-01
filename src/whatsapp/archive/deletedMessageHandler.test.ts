@@ -109,7 +109,7 @@ describe('handleDeletedMessage', () => {
         quotedWhatsappMessageId: undefined,
         quotedParticipant: undefined,
       },
-      group.id,
+      { groupId: group.id },
     );
 
     await handleDeletedMessage(

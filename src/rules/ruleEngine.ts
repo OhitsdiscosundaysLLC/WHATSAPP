@@ -1,12 +1,13 @@
 import type { Logger } from 'pino';
 import type { AiUsageRepository } from '../db/aiUsageRepository';
 import type { AuditRepository } from '../db/auditRepository';
+import type { ContactSettings } from '../db/contactsRepository';
 import type { GroupSettings } from '../db/groupsRepository';
 import type { ModerationStateRepository } from '../db/moderationStateRepository';
 import type { GroupRule, RulesRepository } from '../db/rulesRepository';
 import type { RuleStateRepository } from '../db/ruleStateRepository';
 import type { AiCallContext, AIService } from '../ai/aiService';
-import { checkAiUsageAllowed } from '../ai/aiUsagePolicy';
+import { checkAiUsageAllowed, checkAiUsageAllowedForContact } from '../ai/aiUsagePolicy';
 import type { NormalizedMessageEvent } from '../whatsapp/events/messageNormalizer';
 import { executeAction, type MessageSender } from './actionEngine';
 import { classifyAutoReply } from './classifiers/autoReplyClassifier';
@@ -91,6 +92,34 @@ export class RuleEngine {
             'Skipping rule with unsupported trigger_type',
           );
       }
+    }
+  }
+
+  /**
+   * DM-side equivalent of `evaluate()` — a private chat only ever supports
+   * `auto_reply` rules (no distinct-responder threshold — a DM has exactly
+   * one other participant — and no moderation — there is no participant to
+   * remove). Caller (eventPipeline) must only call this when the contact
+   * isn't blocked; `settings.privateAutoReplyEnabled` is still re-checked
+   * here as defense in depth, same pattern as the group path.
+   */
+  async evaluatePrivate(
+    event: NormalizedMessageEvent,
+    contactId: string,
+    settings: ContactSettings,
+  ): Promise<void> {
+    if (event.fromMe || event.context !== 'private') return;
+
+    const rules = await this.deps.rulesRepository.listEnabledByContact(contactId);
+    for (const rule of rules) {
+      if (rule.triggerType !== 'auto_reply') {
+        this.deps.logger.warn(
+          { ruleId: rule.id, triggerType: rule.triggerType },
+          'Skipping contact rule with unsupported trigger_type',
+        );
+        continue;
+      }
+      await this.evaluateContactAutoReply(rule, event, contactId, settings);
     }
   }
 
@@ -274,6 +303,7 @@ export class RuleEngine {
     const classifyCtx: AiCallContext = {
       accountId,
       groupId,
+      contactId: undefined,
       ruleId: rule.id,
       reason: 'auto_reply_classify',
     };
@@ -309,6 +339,7 @@ export class RuleEngine {
       const generateCtx: AiCallContext = {
         accountId,
         groupId,
+        contactId: undefined,
         ruleId: rule.id,
         reason: 'auto_reply_generate',
       };
@@ -367,6 +398,163 @@ export class RuleEngine {
     this.deps.logger.info(
       { ruleId: rule.id, groupId, actionStatus: result.status },
       'Auto-reply rule fired',
+    );
+  }
+
+  /**
+   * DM-side equivalent of `evaluateAutoReply` — same three-gate AI
+   * permission check (`privateAiEnabled`/`privateAutoReplyEnabled`/
+   * `privateAiAutoReplyEnabled`/`privateAiSemanticClassificationEnabled`),
+   * same cooldown/rate-limit policy, same classify/generate helpers, same
+   * audit trail — just scoped to a contact instead of a group. Kept as a
+   * separate method (rather than generalizing evaluateAutoReply) to avoid
+   * any risk to the already-verified group path.
+   */
+  private async evaluateContactAutoReply(
+    rule: GroupRule,
+    event: NormalizedMessageEvent,
+    contactId: string,
+    settings: ContactSettings,
+  ): Promise<void> {
+    if (!settings.privateAutoReplyEnabled) return;
+
+    const config = rule.config as AutoReplyConfig;
+    const contactJid = event.chatJid;
+    const accountId = event.accountId;
+
+    const usesAi = config.qualify.classifier === 'ai' || config.action.type === 'AI_REPLY';
+    if (usesAi) {
+      if (
+        !settings.privateAiEnabled ||
+        !settings.privateAiAutoReplyEnabled ||
+        !settings.privateAiSemanticClassificationEnabled
+      ) {
+        return; // Not explicitly permitted for this contact — skip silently.
+      }
+      if (!this.deps.ai) return; // OPENAI_API_KEY not configured.
+
+      const permission = await checkAiUsageAllowedForContact(
+        contactId,
+        {
+          aiCooldownSeconds: settings.aiCooldownSeconds,
+          aiMaxResponsesPerHour: settings.aiMaxResponsesPerHour,
+        },
+        this.deps.ai.usageRepository,
+      );
+      if (!permission.allowed) {
+        await this.deps.auditRepository.recordEvent({
+          accountId,
+          groupId: undefined,
+          contactId,
+          eventType: 'ai.rate_limited',
+          detail: { ruleId: rule.id, ruleName: rule.name, reason: permission.reason },
+        });
+        return;
+      }
+    }
+
+    const classifyCtx: AiCallContext = {
+      accountId,
+      groupId: undefined,
+      contactId,
+      ruleId: rule.id,
+      reason: 'private_auto_reply_classify',
+    };
+    const qualifies = await classifyAutoReply(
+      event.text,
+      config.qualify,
+      this.deps.ai?.service,
+      classifyCtx,
+    );
+    if (!qualifies) return;
+
+    if (config.cooldownSeconds > 0) {
+      const lastFiredAt = await this.deps.ruleStateRepository.getLastFiredAt(rule.id);
+      if (lastFiredAt) {
+        const elapsedSeconds = (Date.now() - lastFiredAt.getTime()) / 1000;
+        if (elapsedSeconds < config.cooldownSeconds) {
+          await this.deps.auditRepository.recordAction({
+            accountId,
+            groupId: undefined,
+            contactId,
+            ruleId: rule.id,
+            triggerWhatsappMessageId: event.whatsappMessageId,
+            actionType: config.action.type,
+            status: 'skipped',
+            detail: { reason: 'cooldown_active' },
+          });
+          return;
+        }
+      }
+    }
+
+    let resolvedAction: ActionConfig;
+    if (config.action.type === 'AI_REPLY') {
+      const generateCtx: AiCallContext = {
+        accountId,
+        groupId: undefined,
+        contactId,
+        ruleId: rule.id,
+        reason: 'private_auto_reply_generate',
+      };
+      try {
+        const generated = await this.deps.ai!.service.generateReply(generateCtx, {
+          ownerConfig: buildOwnerConfigPromptForContact(settings),
+          userMessage: event.text ?? '',
+        });
+        resolvedAction = { type: 'SEND_MESSAGE', message: generated };
+      } catch (err) {
+        await this.deps.auditRepository.recordAction({
+          accountId,
+          groupId: undefined,
+          contactId,
+          ruleId: rule.id,
+          triggerWhatsappMessageId: event.whatsappMessageId,
+          actionType: 'AI_REPLY',
+          status: 'failed',
+          detail: { error: err instanceof Error ? err.message : String(err) },
+        });
+        return;
+      }
+    } else {
+      resolvedAction = config.action;
+    }
+
+    const result = await executeAction(resolvedAction, {
+      groupJid: contactJid,
+      sender: this.deps.sender,
+      ownerJids: this.deps.ownerJids,
+    });
+
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    await this.deps.auditRepository.recordAction({
+      accountId,
+      groupId: undefined,
+      contactId,
+      ruleId: rule.id,
+      triggerWhatsappMessageId: event.whatsappMessageId,
+      actionType: config.action.type,
+      status: result.status,
+      ...(result.detail ? { detail: { message: result.detail } } : {}),
+    });
+    await this.deps.auditRepository.recordEvent({
+      accountId,
+      groupId: undefined,
+      contactId,
+      eventType: 'rule.fired',
+      detail: {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        triggerType: 'auto_reply',
+        actionType: config.action.type,
+        actionStatus: result.status,
+      },
+    });
+
+    this.deps.logger.info(
+      { ruleId: rule.id, contactId, actionStatus: result.status },
+      'Private auto-reply rule fired',
     );
   }
 
@@ -484,6 +672,18 @@ function buildOwnerConfigPrompt(settings: GroupSettings): string | undefined {
   const parts: string[] = [];
   if (settings.customGroupInstructions) {
     parts.push(`Group context: ${settings.customGroupInstructions}`);
+  }
+  if (settings.customAiInstructions) {
+    parts.push(`AI instructions: ${settings.customAiInstructions}`);
+  }
+  return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
+/** Same as buildOwnerConfigPrompt, for a private contact's settings. */
+function buildOwnerConfigPromptForContact(settings: ContactSettings): string | undefined {
+  const parts: string[] = [];
+  if (settings.customInstructions) {
+    parts.push(`Contact context: ${settings.customInstructions}`);
   }
   if (settings.customAiInstructions) {
     parts.push(`AI instructions: ${settings.customAiInstructions}`);

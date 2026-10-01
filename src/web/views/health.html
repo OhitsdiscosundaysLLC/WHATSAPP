@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — System Health</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <a class="nav-link" href="/admins">Admins</a>
+        <a class="nav-link active" href="/health">Health</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>System Health</h2>
+        </div>
+        <p class="muted" style="font-size: 13px; margin-top: -8px; margin-bottom: 18px">
+          Live status of every subsystem. Never shows secret values — only whether each one is
+          configured and reachable.
+        </p>
+        <div id="health-error" class="error-text"></div>
+
+        <div class="card" style="padding: 16px; margin-bottom: 16px">
+          <div class="section-head" style="margin-bottom: 8px">
+            <h3 style="margin: 0">Application</h3>
+            <span id="app-pill"></span>
+          </div>
+          <div id="app-detail" class="muted" style="font-size: 13px"></div>
+        </div>
+
+        <div class="card" style="padding: 16px; margin-bottom: 16px">
+          <div class="section-head" style="margin-bottom: 8px">
+            <h3 style="margin: 0">Database (Supabase)</h3>
+            <span id="database-pill"></span>
+          </div>
+          <div id="database-detail" class="muted" style="font-size: 13px"></div>
+        </div>
+
+        <div class="card" style="padding: 16px; margin-bottom: 16px">
+          <div class="section-head" style="margin-bottom: 8px">
+            <h3 style="margin: 0">Storage (media archive)</h3>
+            <span id="storage-pill"></span>
+          </div>
+          <div class="muted" style="font-size: 13px">
+            Uses the same Supabase project as the database above.
+          </div>
+        </div>
+
+        <div class="card" style="padding: 16px; margin-bottom: 16px">
+          <div class="section-head" style="margin-bottom: 8px">
+            <h3 style="margin: 0">OpenAI</h3>
+            <span id="openai-pill"></span>
+          </div>
+          <div class="muted" style="font-size: 13px">
+            Reports whether an API key is configured — never makes a real request just to check
+            health.
+          </div>
+        </div>
+
+        <div class="section-head" style="margin-top: 28px; margin-bottom: 8px">
+          <h3 style="margin: 0">WhatsApp Accounts</h3>
+        </div>
+        <div id="account-list" class="group-list"></div>
+        <div id="account-empty" class="empty-state hidden">
+          <p>No WhatsApp accounts connected yet.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/health.js"></script>
+  </body>
+</html>

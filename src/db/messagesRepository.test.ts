@@ -58,7 +58,7 @@ describe('MessagesRepository', () => {
 
   it('store() persists a normalized message when monitoring is enabled', async () => {
     const { repo, fake } = withFake();
-    await repo.store(event({ text: 'Congrats sir' }), 'group-uuid-1');
+    await repo.store(event({ text: 'Congrats sir' }), { groupId: 'group-uuid-1' });
     const rows = fake.rawRows('whatsapp_messages');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ text_content: 'Congrats sir', group_id: 'group-uuid-1' });
@@ -66,12 +66,13 @@ describe('MessagesRepository', () => {
 
   it('store() does not store giant raw payloads — only the normalized fields', async () => {
     const { repo, fake } = withFake();
-    await repo.store(event(), 'group-uuid-1');
+    await repo.store(event(), { groupId: 'group-uuid-1' });
     const row = fake.rawRows('whatsapp_messages')[0]!;
     expect(Object.keys(row).sort()).toEqual(
       [
         'account_id',
         'chat_jid',
+        'contact_id',
         'created_at',
         'from_me',
         'group_id',

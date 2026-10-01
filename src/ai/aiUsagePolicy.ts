@@ -53,3 +53,39 @@ export async function checkAiUsageAllowed(
 
   return { allowed: true, reason: undefined };
 }
+
+/** Same gate as checkAiUsageAllowed, scoped to a private contact instead of a group. */
+export async function checkAiUsageAllowedForContact(
+  contactId: string,
+  limits: AiUsageLimits,
+  aiUsageRepository: AiUsageRepository,
+): Promise<AiPermissionCheck> {
+  if (limits.aiCooldownSeconds > 0) {
+    const lastUsedAt = await aiUsageRepository.getLastSuccessfulAtForContact(contactId);
+    if (lastUsedAt) {
+      const elapsedSeconds = (Date.now() - lastUsedAt.getTime()) / 1000;
+      if (elapsedSeconds < limits.aiCooldownSeconds) {
+        return {
+          allowed: false,
+          reason: `AI cooldown active (${Math.ceil(limits.aiCooldownSeconds - elapsedSeconds)}s remaining)`,
+        };
+      }
+    }
+  }
+
+  if (limits.aiMaxResponsesPerHour !== undefined) {
+    const sinceOneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const count = await aiUsageRepository.countRecentSuccessfulForContact(
+      contactId,
+      sinceOneHourAgo,
+    );
+    if (count >= limits.aiMaxResponsesPerHour) {
+      return {
+        allowed: false,
+        reason: `AI max responses per hour reached (${count}/${limits.aiMaxResponsesPerHour})`,
+      };
+    }
+  }
+
+  return { allowed: true, reason: undefined };
+}

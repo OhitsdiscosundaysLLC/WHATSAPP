@@ -1,12 +1,13 @@
 import type { Logger } from 'pino';
+import type { ContactsRepository } from '../../db/contactsRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Purges archived deleted-message *text* past each group's configured
- * `deleted_message_retention_days` (product spec Part D: "do not keep
+ * Purges archived deleted-message *text* past each group's/contact's
+ * configured retention-days setting (product spec Part D: "do not keep
  * everything forever by default"). Only clears `whatsapp_messages.text_content`
  * for already-deleted rows — never the row itself, which stays for audit
  * continuity (sender, timestamp, that a deletion happened).
@@ -20,6 +21,7 @@ export async function runRetentionSweep(
   groupsRepository: GroupsRepository,
   messagesRepository: MessagesRepository,
   logger: Logger,
+  contactsRepository?: ContactsRepository,
 ): Promise<void> {
   const groups = await groupsRepository.listAll();
   for (const group of groups) {
@@ -33,8 +35,32 @@ export async function runRetentionSweep(
         logger.info({ groupId: group.id, purgedCount }, 'Purged expired deleted-message content');
       }
     } catch (err) {
-      // One group's failure must never stop the sweep for every other group.
+      // One group's failure must never stop the sweep for every other group/contact.
       logger.warn({ err, groupId: group.id }, 'Retention sweep failed for group');
+    }
+  }
+
+  if (!contactsRepository) return; // undefined only outside full production wiring — see accountManager.ts
+
+  const contacts = await contactsRepository.listAll();
+  for (const contact of contacts) {
+    try {
+      const settings = await contactsRepository.getSettings(contact.id);
+      if (!settings?.deletedMessageRetentionDays) continue;
+
+      const cutoff = new Date(Date.now() - settings.deletedMessageRetentionDays * DAY_MS);
+      const purgedCount = await messagesRepository.purgeExpiredDeletedContentForContact(
+        contact.id,
+        cutoff,
+      );
+      if (purgedCount > 0) {
+        logger.info(
+          { contactId: contact.id, purgedCount },
+          'Purged expired deleted-message content (private)',
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, contactId: contact.id }, 'Retention sweep failed for contact');
     }
   }
 }
@@ -44,11 +70,12 @@ export function startRetentionSweep(
   groupsRepository: GroupsRepository,
   messagesRepository: MessagesRepository,
   logger: Logger,
+  contactsRepository?: ContactsRepository,
   intervalMs = 6 * 60 * 60 * 1000, // 6 hours
 ): () => void {
   const run = () => {
-    runRetentionSweep(groupsRepository, messagesRepository, logger).catch((err: unknown) =>
-      logger.error({ err }, 'Retention sweep threw unexpectedly'),
+    runRetentionSweep(groupsRepository, messagesRepository, logger, contactsRepository).catch(
+      (err: unknown) => logger.error({ err }, 'Retention sweep threw unexpectedly'),
     );
   };
 

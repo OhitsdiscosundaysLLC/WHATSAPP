@@ -30,7 +30,13 @@ describe('AIService', () => {
     const { fake, service } = setup(provider);
 
     const text = await service.generateReply(
-      { accountId: 'acct-1', groupId: 'group-1', ruleId: 'rule-1', reason: 'auto_reply_generate' },
+      {
+        accountId: 'acct-1',
+        groupId: 'group-1',
+        contactId: undefined,
+        ruleId: 'rule-1',
+        reason: 'auto_reply_generate',
+      },
       { ownerConfig: 'Be friendly', userMessage: 'hi' },
     );
 
@@ -54,7 +60,13 @@ describe('AIService', () => {
     const { fake, service } = setup(provider);
 
     await service.generateReply(
-      { accountId: 'acct-1', groupId: 'group-1', ruleId: undefined, reason: 'auto_reply_generate' },
+      {
+        accountId: 'acct-1',
+        groupId: 'group-1',
+        contactId: undefined,
+        ruleId: undefined,
+        reason: 'auto_reply_generate',
+      },
       { ownerConfig: undefined, userMessage: 'a very private message' },
     );
 
@@ -74,6 +86,7 @@ describe('AIService', () => {
         {
           accountId: 'acct-1',
           groupId: 'group-1',
+          contactId: undefined,
           ruleId: undefined,
           reason: 'auto_reply_generate',
         },
@@ -96,7 +109,13 @@ describe('AIService', () => {
     const { service } = setup(provider);
 
     const result = await service.classify(
-      { accountId: 'acct-1', groupId: 'group-1', ruleId: 'rule-1', reason: 'auto_reply_classify' },
+      {
+        accountId: 'acct-1',
+        groupId: 'group-1',
+        contactId: undefined,
+        ruleId: 'rule-1',
+        reason: 'auto_reply_classify',
+      },
       { criteria: 'asks about business hours', userMessage: 'what time do you open?' },
     );
     expect(result).toBe(true);
@@ -112,7 +131,13 @@ describe('AIService', () => {
     const { service } = setup(provider);
 
     const result = await service.classify(
-      { accountId: 'acct-1', groupId: 'group-1', ruleId: 'rule-1', reason: 'auto_reply_classify' },
+      {
+        accountId: 'acct-1',
+        groupId: 'group-1',
+        contactId: undefined,
+        ruleId: 'rule-1',
+        reason: 'auto_reply_classify',
+      },
       { criteria: 'asks about business hours', userMessage: 'nice weather today' },
     );
     expect(result).toBe(false);
@@ -125,7 +150,13 @@ describe('AIService', () => {
     const { service } = setup(provider);
 
     const result = await service.classify(
-      { accountId: 'acct-1', groupId: 'group-1', ruleId: undefined, reason: 'auto_reply_classify' },
+      {
+        accountId: 'acct-1',
+        groupId: 'group-1',
+        contactId: undefined,
+        ruleId: undefined,
+        reason: 'auto_reply_classify',
+      },
       { criteria: 'anything', userMessage: 'hi' },
     );
     expect(result).toBe(false);
@@ -144,7 +175,13 @@ describe('AIService', () => {
     const service = new AIService(provider, usageRepository, testLogger);
 
     const text = await service.generateReply(
-      { accountId: 'acct-1', groupId: 'group-1', ruleId: undefined, reason: 'auto_reply_generate' },
+      {
+        accountId: 'acct-1',
+        groupId: 'group-1',
+        contactId: undefined,
+        ruleId: undefined,
+        reason: 'auto_reply_generate',
+      },
       { ownerConfig: undefined, userMessage: 'hi' },
     );
     expect(text).toBe('ok');

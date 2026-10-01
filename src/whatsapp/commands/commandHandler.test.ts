@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
+import { AdminsRepository } from '../../db/adminsRepository';
 import { AuditRepository } from '../../db/auditRepository';
 import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
 import { GroupsRepository } from '../../db/groupsRepository';
@@ -134,6 +135,35 @@ describe('tryHandleCommand — authorization', () => {
     const { group, deps } = await setup();
     const handled = await tryHandleCommand(
       baseEvent({ senderJid: '15550001111@s.whatsapp.net', text: '.notacommand' }),
+      group,
+      deps,
+    );
+    expect(handled).toBe(false);
+  });
+});
+
+describe('tryHandleCommand — dashboard-managed (DB) admins', () => {
+  it('a number added via AdminsRepository can run commands, merged with env ADMIN_WHATSAPP_NUMBERS', async () => {
+    const { group, deps, fake, groupsRepository } = await setup(['15550001111'], ['15559990000']);
+    const adminsRepository = new AdminsRepository(fake as unknown as SupabaseClient);
+    await adminsRepository.add('acct-1', '15557778888', 'Dashboard-added admin');
+    deps.adminsRepository = adminsRepository;
+
+    const handled = await tryHandleCommand(
+      baseEvent({ senderJid: '15557778888@s.whatsapp.net', text: '.bot on' }),
+      group,
+      deps,
+    );
+    expect(handled).toBe(true);
+    expect((await groupsRepository.ensureSettings(group.id)).botEnabled).toBe(true);
+  });
+
+  it('a number not in env nor DB admins still cannot run commands even when adminsRepository is wired', async () => {
+    const { group, deps, fake } = await setup(['15550001111'], []);
+    deps.adminsRepository = new AdminsRepository(fake as unknown as SupabaseClient);
+
+    const handled = await tryHandleCommand(
+      baseEvent({ senderJid: 'random@s.whatsapp.net', text: '.bot on' }),
       group,
       deps,
     );

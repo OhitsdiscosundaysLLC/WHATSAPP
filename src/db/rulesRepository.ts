@@ -4,7 +4,9 @@ import { validateRuleConfig, type GroupRuleConfig } from '../rules/ruleConfig';
 
 export interface GroupRule {
   id: string;
-  groupId: string;
+  /** Exactly one of groupId/contactId is set — see group_rules_scope_check. */
+  groupId: string | undefined;
+  contactId: string | undefined;
   name: string;
   enabled: boolean;
   triggerType: string;
@@ -21,6 +23,15 @@ export interface CreateRuleInput {
   enabled?: boolean;
 }
 
+export interface CreateContactRuleInput {
+  contactId: string;
+  name: string;
+  /** Only 'auto_reply' makes sense for a 1:1 DM — no distinct-responder threshold, no participant moderation. */
+  triggerType: 'auto_reply';
+  config: unknown;
+  enabled?: boolean;
+}
+
 export interface UpdateRuleInput {
   name?: string;
   config?: unknown;
@@ -29,7 +40,8 @@ export interface UpdateRuleInput {
 
 interface RuleRow {
   id: string;
-  group_id: string;
+  group_id: string | null;
+  contact_id: string | null;
   name: string;
   enabled: boolean;
   trigger_type: string;
@@ -46,7 +58,8 @@ function fromRow(row: RuleRow): GroupRule {
   const config = validateRuleConfig(row.trigger_type, row.config);
   return {
     id: row.id,
-    groupId: row.group_id,
+    groupId: row.group_id ?? undefined,
+    contactId: row.contact_id ?? undefined,
     name: row.name,
     enabled: row.enabled,
     triggerType: row.trigger_type,
@@ -86,6 +99,33 @@ export class RulesRepository {
 
     if (error || !data) {
       throw new Error(`Failed to create rule: ${error?.message ?? 'no row returned'}`);
+    }
+    return fromRow(data as RuleRow);
+  }
+
+  /** Creates a rule scoped to a private contact instead of a group — only `auto_reply` is valid here. */
+  async createForContact(input: CreateContactRuleInput): Promise<GroupRule> {
+    const config = validateRuleConfig(input.triggerType, input.config);
+    const now = new Date().toISOString();
+
+    const { data, error } = await this.supabase
+      .from('group_rules')
+      .insert({
+        id: randomUUID(),
+        group_id: null,
+        contact_id: input.contactId,
+        name: input.name,
+        enabled: input.enabled ?? true,
+        trigger_type: input.triggerType,
+        config,
+        created_at: now,
+        updated_at: now,
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new Error(`Failed to create contact rule: ${error?.message ?? 'no row returned'}`);
     }
     return fromRow(data as RuleRow);
   }
@@ -160,6 +200,31 @@ export class RulesRepository {
       .eq('enabled', true);
     if (error) {
       throw new Error(`Failed to list enabled rules: ${error.message}`);
+    }
+    return (data ?? []).map((row) => fromRow(row as RuleRow));
+  }
+
+  async listByContact(contactId: string): Promise<GroupRule[]> {
+    const { data, error } = await this.supabase
+      .from('group_rules')
+      .select('*')
+      .eq('contact_id', contactId)
+      .order('created_at', { ascending: true });
+    if (error) {
+      throw new Error(`Failed to list contact rules: ${error.message}`);
+    }
+    return (data ?? []).map((row) => fromRow(row as RuleRow));
+  }
+
+  /** Only enabled rules for this contact — what the rule engine evaluates against an incoming private message. */
+  async listEnabledByContact(contactId: string): Promise<GroupRule[]> {
+    const { data, error } = await this.supabase
+      .from('group_rules')
+      .select('*')
+      .eq('contact_id', contactId)
+      .eq('enabled', true);
+    if (error) {
+      throw new Error(`Failed to list enabled contact rules: ${error.message}`);
     }
     return (data ?? []).map((row) => fromRow(row as RuleRow));
   }

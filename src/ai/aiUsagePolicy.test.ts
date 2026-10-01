@@ -25,6 +25,7 @@ describe('checkAiUsageAllowed', () => {
     await repository.record({
       accountId: 'acct-1',
       groupId: 'group-1',
+      contactId: undefined,
       ruleId: undefined,
       reason: 'auto_reply_generate',
       model: 'gpt-4o-mini',
@@ -49,6 +50,7 @@ describe('checkAiUsageAllowed', () => {
     await repository.record({
       accountId: 'acct-1',
       groupId: 'group-1',
+      contactId: undefined,
       ruleId: undefined,
       reason: 'auto_reply_generate',
       model: 'gpt-4o-mini',
@@ -73,6 +75,7 @@ describe('checkAiUsageAllowed', () => {
       await repository.record({
         accountId: 'acct-1',
         groupId: 'group-1',
+        contactId: undefined,
         ruleId: undefined,
         reason: 'auto_reply_generate',
         model: 'gpt-4o-mini',
@@ -99,6 +102,7 @@ describe('checkAiUsageAllowed', () => {
       await repository.record({
         accountId: 'acct-1',
         groupId: 'group-1',
+        contactId: undefined,
         ruleId: undefined,
         reason: 'auto_reply_generate',
         model: 'gpt-4o-mini',
@@ -124,6 +128,7 @@ describe('checkAiUsageAllowed', () => {
       await repository.record({
         accountId: 'acct-1',
         groupId: 'group-1',
+        contactId: undefined,
         ruleId: undefined,
         reason: 'auto_reply_generate',
         model: 'gpt-4o-mini',

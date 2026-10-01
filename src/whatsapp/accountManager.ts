@@ -4,9 +4,11 @@ import { AIService } from '../ai/aiService';
 import { OpenAIProvider } from '../ai/openaiProvider';
 import { config } from '../config/config';
 import { AccountSettingsRepository } from '../db/accountSettingsRepository';
+import { AdminsRepository } from '../db/adminsRepository';
 import { AiUsageRepository } from '../db/aiUsageRepository';
 import { AuditRepository } from '../db/auditRepository';
 import { CallEventsRepository } from '../db/callEventsRepository';
+import { ContactsRepository } from '../db/contactsRepository';
 import { GroupsRepository } from '../db/groupsRepository';
 import { IdentityMapRepository } from '../db/identityMapRepository';
 import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
@@ -306,6 +308,7 @@ export class AccountManager {
     if (this.storageMode?.kind === 'supabase') {
       const supabase = getSupabaseClient();
       const groupsRepository = new GroupsRepository(supabase);
+      const contactsRepository = new ContactsRepository(supabase);
       const messagesRepository = new MessagesRepository(supabase);
       const rulesRepository = new RulesRepository(supabase);
       const ruleStateRepository = new RuleStateRepository(supabase);
@@ -317,6 +320,7 @@ export class AccountManager {
       const accountSettingsRepository = new AccountSettingsRepository(supabase);
       const notificationCooldowns = new NotificationCooldownRepository(supabase);
       const identityMapRepository = new IdentityMapRepository(supabase);
+      const adminsRepository = new AdminsRepository(supabase);
 
       const sender = {
         sendTextMessage: (jid: string, text: string) => manager.sendTextMessage(jid, text),
@@ -362,6 +366,7 @@ export class AccountManager {
       const eventPipeline = new EventPipeline({
         accountId,
         groupsRepository,
+        contactsRepository,
         messagesRepository,
         identityMapRepository,
         ruleEngine,
@@ -374,6 +379,15 @@ export class AccountManager {
           sender,
           ownerJids: ownerJids(),
           logger: createChildLogger(`whatsapp:account:${accountId}:deleted`),
+        },
+        privateDeletedMessageHandlerDeps: {
+          contactsRepository,
+          messagesRepository,
+          auditRepository,
+          notificationCooldowns,
+          sender,
+          ownerJids: ownerJids(),
+          logger: createChildLogger(`whatsapp:account:${accountId}:deleted-private`),
         },
         viewOnceHandlerDeps: {
           supabase,
@@ -390,7 +404,20 @@ export class AccountManager {
           ai,
           ownerNumbers: config.authorization.ownerNumbers,
           adminNumbers: config.authorization.adminNumbers,
+          adminsRepository,
           logger: createChildLogger(`whatsapp:account:${accountId}:commands`),
+        },
+        privateCommandHandlerDeps: {
+          contactsRepository,
+          rulesRepository,
+          auditRepository,
+          identityMapRepository,
+          sender,
+          ai,
+          ownerNumbers: config.authorization.ownerNumbers,
+          adminNumbers: config.authorization.adminNumbers,
+          adminsRepository,
+          logger: createChildLogger(`whatsapp:account:${accountId}:commands-private`),
         },
         logger: createChildLogger(`whatsapp:account:${accountId}:events`),
       });

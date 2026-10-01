@@ -10,7 +10,9 @@ import {
 import { createChildLogger } from './services/logger';
 import { createAccountRouter } from './web/accountRoutes';
 import { createActivityRouter } from './web/activityRoutes';
+import { createAdminRouter } from './web/adminRoutes';
 import { createAuthRouter } from './web/authRoutes';
+import { createContactRouter } from './web/contactRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
 import { createGroupRouter } from './web/groupRoutes';
 import type { WhatsAppStatus } from './whatsapp/types';
@@ -78,8 +80,14 @@ export function createServer({
   // Authenticated group configuration + rule builder API (Phase 4+5).
   app.use('/api/groups', createGroupRouter());
 
+  // Authenticated private-contact (DM) configuration + rule builder API.
+  app.use('/api/contacts', createContactRouter());
+
   // Authenticated read-only activity feed (Phase 4+5).
   app.use('/api/activity', createActivityRouter());
+
+  // Authenticated admin/permission management — owner stays read-only/env-only.
+  app.use('/api/admins', createAdminRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });

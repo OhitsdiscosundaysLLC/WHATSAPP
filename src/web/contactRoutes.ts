@@ -1,0 +1,336 @@
+import { Router, type Request, type Response } from 'express';
+import { AuditRepository } from '../db/auditRepository';
+import { ContactsRepository, type ContactSettingsPatch } from '../db/contactsRepository';
+import { MessagesRepository } from '../db/messagesRepository';
+import { RulesRepository } from '../db/rulesRepository';
+import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
+import { createChildLogger } from '../services/logger';
+import { accountManager } from '../whatsapp/accountManager';
+import { attachSession, requireAuth, requireCsrf } from './authMiddleware';
+
+const log = createChildLogger('web:contacts');
+
+const MATCH_MODES = ['contains', 'exact', 'keyword_any'] as const;
+const AUTO_REPLY_ACTION_TYPES = ['SEND_MESSAGE', 'AI_REPLY'] as const;
+
+/** Friendly shape the dashboard's contact rule-builder form submits — same auto_reply-only shape as group rules. */
+interface ContactRuleFormInput {
+  name?: unknown;
+  phrases?: unknown;
+  matchMode?: unknown;
+  classifier?: unknown;
+  aiInstructions?: unknown;
+  cooldownSeconds?: unknown;
+  actionType?: unknown;
+  message?: unknown;
+}
+
+function autoReplyFormToConfig(body: ContactRuleFormInput): unknown {
+  const useAi = body.classifier === 'ai';
+  const phrases = Array.isArray(body.phrases)
+    ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  const matchMode = MATCH_MODES.includes(body.matchMode as (typeof MATCH_MODES)[number])
+    ? body.matchMode
+    : 'contains';
+  const qualify = useAi
+    ? {
+        classifier: 'ai',
+        aiInstructions: typeof body.aiInstructions === 'string' ? body.aiInstructions : '',
+      }
+    : { classifier: 'deterministic', mode: matchMode, phrases };
+
+  const actionType = AUTO_REPLY_ACTION_TYPES.includes(
+    body.actionType as (typeof AUTO_REPLY_ACTION_TYPES)[number],
+  )
+    ? body.actionType
+    : 'SEND_MESSAGE';
+  const action =
+    actionType === 'AI_REPLY'
+      ? { type: 'AI_REPLY' }
+      : { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' };
+
+  return { qualify, action, cooldownSeconds: Number(body.cooldownSeconds ?? 0) };
+}
+
+function requireSupabase(res: Response): boolean {
+  if (!isSupabaseConfigured()) {
+    res.status(503).json({
+      error: 'supabase_not_configured',
+      message:
+        'Private contacts require Supabase (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY) to be configured. See docs/DEPLOYMENT.md.',
+    });
+    return false;
+  }
+  return true;
+}
+
+export function createContactRouter(): Router {
+  const router = Router();
+  router.use(attachSession, requireAuth);
+
+  router.get('/', async (_req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const supabase = getSupabaseClient();
+    const contactsRepository = new ContactsRepository(supabase);
+    const rulesRepository = new RulesRepository(supabase);
+
+    const accounts = new Map(accountManager.listAccounts().map((a) => [a.id, a.label]));
+    const contacts = await contactsRepository.listAll();
+
+    const payload = await Promise.all(
+      contacts.map(async (contact) => {
+        const [settings, rules] = await Promise.all([
+          contactsRepository.ensureSettings(contact.id),
+          rulesRepository.listByContact(contact.id),
+        ]);
+        return {
+          id: contact.id,
+          accountId: contact.accountId,
+          accountLabel: accounts.get(contact.accountId) ?? 'Unknown account',
+          whatsappJid: contact.whatsappJid,
+          displayName: contact.displayName,
+          blocked: contact.blocked,
+          allowlisted: contact.allowlisted,
+          discoveredAt: contact.discoveredAt,
+          privateMonitoringEnabled: settings.privateMonitoringEnabled,
+          privateAiEnabled: settings.privateAiEnabled,
+          privateAutoReplyEnabled: settings.privateAutoReplyEnabled,
+          ruleCount: rules.length,
+        };
+      }),
+    );
+
+    res.status(200).json({ contacts: payload });
+  });
+
+  router.get('/:id', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const contactsRepository = new ContactsRepository(supabase);
+
+    const contact = await contactsRepository.getById(id);
+    if (!contact) {
+      res.status(404).json({ error: 'contact_not_found' });
+      return;
+    }
+    const settings = await contactsRepository.ensureSettings(id);
+    const accountLabel =
+      accountManager.listAccounts().find((a) => a.id === contact.accountId)?.label ??
+      'Unknown account';
+
+    res.status(200).json({ contact: { ...contact, accountLabel }, settings });
+  });
+
+  /** Blocked / allowlisted / displayName — the contact row itself, not its automation settings. */
+  router.patch('/:id', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const contactsRepository = new ContactsRepository(supabase);
+
+    const contact = await contactsRepository.getById(id);
+    if (!contact) {
+      res.status(404).json({ error: 'contact_not_found' });
+      return;
+    }
+
+    const body = req.body as { blocked?: unknown; allowlisted?: unknown; displayName?: unknown };
+    const patch: { blocked?: boolean; allowlisted?: boolean; displayName?: string } = {};
+    if (typeof body?.blocked === 'boolean') patch.blocked = body.blocked;
+    if (typeof body?.allowlisted === 'boolean') patch.allowlisted = body.allowlisted;
+    if (typeof body?.displayName === 'string') patch.displayName = body.displayName;
+
+    const updated = await contactsRepository.updateContact(id, patch);
+
+    const auditRepository = new AuditRepository(supabase);
+    await auditRepository.recordEvent({
+      accountId: contact.accountId,
+      groupId: undefined,
+      contactId: id,
+      actor: 'owner',
+      eventType: 'config.changed',
+      detail: { patch, scope: 'private' },
+    });
+
+    res.status(200).json({ contact: updated });
+  });
+
+  router.patch('/:id/settings', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const contactsRepository = new ContactsRepository(supabase);
+
+    const contact = await contactsRepository.getById(id);
+    if (!contact) {
+      res.status(404).json({ error: 'contact_not_found' });
+      return;
+    }
+
+    const body = req.body as Partial<ContactSettingsPatch> | undefined;
+    const patch: ContactSettingsPatch = {};
+    for (const key of [
+      'privateMonitoringEnabled',
+      'privateAiEnabled',
+      'privateAutoReplyEnabled',
+      'privateAiAutoReplyEnabled',
+      'privateAiSemanticClassificationEnabled',
+      'privateDeletedMessageArchiveEnabled',
+    ] as const) {
+      if (typeof body?.[key] === 'boolean') patch[key] = body[key];
+    }
+    if (typeof body?.customInstructions === 'string') {
+      patch.customInstructions = body.customInstructions;
+    }
+    if (typeof body?.customAiInstructions === 'string') {
+      patch.customAiInstructions = body.customAiInstructions;
+    }
+    if (typeof body?.aiCooldownSeconds === 'number') {
+      patch.aiCooldownSeconds = body.aiCooldownSeconds;
+    }
+    if (typeof body?.aiMaxResponsesPerHour === 'number' || body?.aiMaxResponsesPerHour === null) {
+      patch.aiMaxResponsesPerHour = body.aiMaxResponsesPerHour ?? undefined;
+    }
+    if (
+      typeof body?.deletedMessageRetentionDays === 'number' ||
+      body?.deletedMessageRetentionDays === null
+    ) {
+      patch.deletedMessageRetentionDays = body.deletedMessageRetentionDays ?? undefined;
+    }
+
+    const settings = await contactsRepository.updateSettings(id, patch);
+
+    const auditRepository = new AuditRepository(supabase);
+    await auditRepository.recordEvent({
+      accountId: contact.accountId,
+      groupId: undefined,
+      contactId: id,
+      actor: 'owner',
+      eventType: 'config.changed',
+      detail: { patch, scope: 'private' },
+    });
+
+    res.status(200).json({ settings });
+  });
+
+  router.get('/:id/rules', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const rulesRepository = new RulesRepository(getSupabaseClient());
+    const rules = await rulesRepository.listByContact(id);
+    res.status(200).json({ rules });
+  });
+
+  router.post('/:id/rules', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const contactsRepository = new ContactsRepository(supabase);
+    const rulesRepository = new RulesRepository(supabase);
+
+    const contact = await contactsRepository.getById(id);
+    if (!contact) {
+      res.status(404).json({ error: 'contact_not_found' });
+      return;
+    }
+
+    const body = req.body as ContactRuleFormInput | undefined;
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name) {
+      res.status(400).json({ error: 'invalid_rule', message: 'A rule name is required.' });
+      return;
+    }
+
+    try {
+      const rule = await rulesRepository.createForContact({
+        contactId: id,
+        name,
+        triggerType: 'auto_reply',
+        config: autoReplyFormToConfig(body ?? {}),
+      });
+
+      const auditRepository = new AuditRepository(supabase);
+      await auditRepository.recordEvent({
+        accountId: contact.accountId,
+        groupId: undefined,
+        contactId: id,
+        actor: 'owner',
+        eventType: 'rule.created',
+        detail: { ruleId: rule.id, ruleName: rule.name, scope: 'private' },
+      });
+
+      res.status(201).json({ rule });
+    } catch (err) {
+      log.warn({ err, contactId: id }, 'Rejected invalid contact rule configuration');
+      res.status(400).json({
+        error: 'invalid_rule_config',
+        message: err instanceof Error ? err.message : 'Invalid rule configuration.',
+      });
+    }
+  });
+
+  router.patch('/:id/rules/:ruleId', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id, ruleId } = req.params as { id: string; ruleId: string };
+    const rulesRepository = new RulesRepository(getSupabaseClient());
+
+    const existing = await rulesRepository.getById(ruleId);
+    if (!existing || existing.contactId !== id) {
+      res.status(404).json({ error: 'rule_not_found' });
+      return;
+    }
+
+    const body = req.body as (ContactRuleFormInput & { enabled?: boolean }) | undefined;
+    try {
+      const patch: { name?: string; enabled?: boolean; config?: unknown } = {};
+      if (typeof body?.name === 'string' && body.name.trim()) patch.name = body.name.trim();
+      if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+      if (
+        body?.phrases !== undefined ||
+        body?.aiInstructions !== undefined ||
+        body?.actionType !== undefined
+      ) {
+        patch.config = autoReplyFormToConfig({
+          ...(existing.config as ContactRuleFormInput),
+          ...body,
+        });
+      }
+
+      const rule = await rulesRepository.update(ruleId, patch);
+      res.status(200).json({ rule });
+    } catch (err) {
+      log.warn({ err, ruleId }, 'Rejected invalid contact rule update');
+      res.status(400).json({
+        error: 'invalid_rule_config',
+        message: err instanceof Error ? err.message : 'Invalid rule configuration.',
+      });
+    }
+  });
+
+  router.delete('/:id/rules/:ruleId', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id, ruleId } = req.params as { id: string; ruleId: string };
+    const rulesRepository = new RulesRepository(getSupabaseClient());
+
+    const existing = await rulesRepository.getById(ruleId);
+    if (!existing || existing.contactId !== id) {
+      res.status(404).json({ error: 'rule_not_found' });
+      return;
+    }
+
+    await rulesRepository.remove(ruleId);
+    res.status(200).json({ ok: true });
+  });
+
+  router.get('/:id/deleted-messages', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const messagesRepository = new MessagesRepository(getSupabaseClient());
+    const messages = await messagesRepository.listDeletedByContact(id);
+    res.status(200).json({ messages });
+  });
+
+  return router;
+}

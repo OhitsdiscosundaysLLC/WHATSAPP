@@ -6,6 +6,7 @@ import { classifyAutoReply } from './autoReplyClassifier';
 const ctx: AiCallContext = {
   accountId: 'acct-1',
   groupId: 'group-1',
+  contactId: undefined,
   ruleId: 'rule-1',
   reason: 'auto_reply_classify',
 };

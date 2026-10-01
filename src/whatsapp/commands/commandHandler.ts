@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import type { AiCallContext, AIService } from '../../ai/aiService';
 import { checkAiUsageAllowed } from '../../ai/aiUsagePolicy';
+import type { AdminsRepository } from '../../db/adminsRepository';
 import type { AiUsageRepository } from '../../db/aiUsageRepository';
 import type { AuditRepository } from '../../db/auditRepository';
 import type { GroupsRepository, WhatsAppGroup } from '../../db/groupsRepository';
@@ -17,14 +18,25 @@ export interface CommandHandlerDeps {
   identityMapRepository: IdentityMapRepository;
   sender: MessageSender;
   ai: { service: AIService; usageRepository: AiUsageRepository } | undefined;
-  /** Digits-only numbers, as configured in OWNER_WHATSAPP_NUMBERS. */
+  /** Digits-only numbers, as configured in OWNER_WHATSAPP_NUMBERS. The owner is always exclusively env-configured — never dashboard-manageable, so an admin can never promote themselves to owner. */
   ownerNumbers: string[];
-  /** Digits-only numbers, as configured in ADMIN_WHATSAPP_NUMBERS. */
+  /** Digits-only numbers, as configured in ADMIN_WHATSAPP_NUMBERS. Merged at check-time with any dashboard-added admins from `adminsRepository`. */
   adminNumbers: string[];
+  /** Optional — when provided, dashboard-managed admins (src/web/adminRoutes.ts) are merged with `adminNumbers` on every authorization check. */
+  adminsRepository?: AdminsRepository;
   logger: Logger;
 }
 
-const KNOWN_COMMANDS = new Set(['bot', 'ai', 'rules', 'settings', 'status', 'help']);
+async function resolveAdminNumbers(
+  accountId: string,
+  deps: Pick<CommandHandlerDeps, 'adminNumbers' | 'adminsRepository'>,
+): Promise<string[]> {
+  if (!deps.adminsRepository) return deps.adminNumbers;
+  const dbAdmins = await deps.adminsRepository.listByAccount(accountId);
+  return [...deps.adminNumbers, ...dbAdmins.map((a) => a.phoneNumber)];
+}
+
+const KNOWN_COMMANDS = new Set(['bot', 'ai', 'monitor', 'rules', 'settings', 'status', 'help']);
 
 /**
  * Owner/admin-only in-chat commands (product spec Part C). Returns `true`
@@ -67,7 +79,7 @@ export async function tryHandleCommand(
     event.accountId,
     deps.identityMapRepository,
     deps.ownerNumbers,
-    deps.adminNumbers,
+    await resolveAdminNumbers(event.accountId, deps),
   );
   if (!role) return false; // Not from an authorized owner/admin — don't treat as a command at all.
 
@@ -82,10 +94,21 @@ export async function tryHandleCommand(
 
   switch (command) {
     case 'bot':
-      await handleToggle(deps, group, event.groupJid!, argsText, 'botEnabled', 'Bot');
+      await handleToggle(deps, group, event.groupJid!, argsText, 'botEnabled', 'Bot', 'bot');
       return true;
     case 'ai':
       await handleAiCommand(deps, event, group, argsText);
+      return true;
+    case 'monitor':
+      await handleToggle(
+        deps,
+        group,
+        event.groupJid!,
+        argsText,
+        'monitoringEnabled',
+        'Monitoring',
+        'monitor',
+      );
       return true;
     case 'rules':
       await handleRules(deps, group, event.groupJid!);
@@ -109,6 +132,7 @@ const HELP_TEXT = [
   '.bot on|off — turn the bot on/off for this group',
   '.ai on|off — turn AI on/off for this group',
   '.ai <question> — ask AI directly (requires AI to be on)',
+  '.monitor on|off — turn message monitoring on/off for this group',
   '.rules — list this group’s rules',
   '.settings — show this group’s current configuration',
   '.status — quick status summary',
@@ -120,20 +144,17 @@ async function handleToggle(
   group: WhatsAppGroup,
   groupJid: string,
   argsText: string,
-  field: 'botEnabled' | 'aiEnabled',
+  field: 'botEnabled' | 'aiEnabled' | 'monitoringEnabled',
   label: string,
+  commandName: string,
 ): Promise<void> {
   const arg = argsText.toLowerCase();
   if (arg !== 'on' && arg !== 'off') {
-    await deps.sender.sendTextMessage(
-      groupJid,
-      `Usage: .${field === 'botEnabled' ? 'bot' : 'ai'} on|off`,
-    );
+    await deps.sender.sendTextMessage(groupJid, `Usage: .${commandName} on|off`);
     return;
   }
   const value = arg === 'on';
-  const patch = field === 'botEnabled' ? { botEnabled: value } : { aiEnabled: value };
-  await deps.groupsRepository.updateSettings(group.id, patch);
+  await deps.groupsRepository.updateSettings(group.id, { [field]: value });
   await deps.sender.sendTextMessage(
     groupJid,
     `${label} is now ${value ? 'ON' : 'OFF'} for this group.`,
@@ -149,7 +170,7 @@ async function handleAiCommand(
   const groupJid = event.groupJid!;
   const lower = argsText.toLowerCase();
   if (lower === 'on' || lower === 'off' || argsText === '') {
-    await handleToggle(deps, group, groupJid, argsText || 'help', 'aiEnabled', 'AI');
+    await handleToggle(deps, group, groupJid, argsText || 'help', 'aiEnabled', 'AI', 'ai');
     return;
   }
 
@@ -187,6 +208,7 @@ async function handleAiCommand(
   const ctx: AiCallContext = {
     accountId: event.accountId,
     groupId: group.id,
+    contactId: undefined,
     ruleId: undefined,
     reason: 'command_ai_ask',
   };

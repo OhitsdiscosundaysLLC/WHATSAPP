@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WhatsApp Bot — Groups</title>
+    <title>WhatsApp Bot — Private Contacts</title>
     <meta name="csrf-token" content="__CSRF_TOKEN__" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -15,8 +15,8 @@
       </div>
       <nav class="nav-links">
         <a class="nav-link" href="/">Accounts</a>
-        <a class="nav-link active" href="/groups">Groups</a>
-        <a class="nav-link" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link active" href="/contacts">Contacts</a>
         <a class="nav-link" href="/activity">Activity</a>
         <a class="nav-link" href="/admins">Admins</a>
         <a class="nav-link" href="/health">Health</a>
@@ -27,27 +27,29 @@
     <main class="app-main">
       <section>
         <div class="section-head">
-          <h2>WhatsApp Groups</h2>
+          <h2>Private Contacts</h2>
         </div>
         <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
-          Groups your connected WhatsApp accounts belong to. Every group starts with the bot OFF —
-          click a group to configure it.
+          Individual people who have DMed a connected WhatsApp account. Every contact starts with
+          monitoring, AI, and auto-reply all OFF — click a contact to configure it. Blocking a
+          contact stops all automation for them immediately, regardless of any other setting.
         </p>
-        <div id="groups-error" class="error-text"></div>
-        <div id="group-list" class="group-list"></div>
+        <div id="contacts-error" class="error-text"></div>
+        <div id="contact-list" class="group-list"></div>
         <div id="empty-state" class="empty-state hidden">
-          <p>No groups discovered yet.</p>
+          <p>No private messages received yet.</p>
           <p class="muted">
-            Groups appear here automatically once a connected WhatsApp account is a member of one.
+            A contact appears here automatically the first time someone DMs a connected WhatsApp
+            account.
           </p>
         </div>
         <div id="unconfigured-state" class="empty-state hidden">
-          <p>Groups require Supabase to be configured.</p>
+          <p>Private contacts require Supabase to be configured.</p>
           <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
         </div>
       </section>
     </main>
 
-    <script src="/groups.js"></script>
+    <script src="/contacts.js"></script>
   </body>
 </html>

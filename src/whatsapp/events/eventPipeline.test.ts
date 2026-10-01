@@ -3,6 +3,7 @@ import type { WAMessage } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditRepository } from '../../db/auditRepository';
+import { ContactsRepository } from '../../db/contactsRepository';
 import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
 import { GroupsRepository } from '../../db/groupsRepository';
 import { IdentityMapRepository } from '../../db/identityMapRepository';
@@ -41,6 +42,7 @@ function setup() {
     'whatsapp_message_id',
   ]);
   const groupsRepository = new GroupsRepository(fake as unknown as SupabaseClient);
+  const contactsRepository = new ContactsRepository(fake as unknown as SupabaseClient);
   const messagesRepository = new MessagesRepository(fake as unknown as SupabaseClient);
   const rulesRepository = new RulesRepository(fake as unknown as SupabaseClient);
   const auditRepository = new AuditRepository(fake as unknown as SupabaseClient);
@@ -68,12 +70,22 @@ function setup() {
   const pipeline = new EventPipeline({
     accountId: ACCOUNT_ID,
     groupsRepository,
+    contactsRepository,
     messagesRepository,
     identityMapRepository,
     ruleEngine,
     auditRepository,
     deletedMessageHandlerDeps: {
       groupsRepository,
+      messagesRepository,
+      auditRepository,
+      notificationCooldowns,
+      sender,
+      ownerJids: [],
+      logger: testLogger,
+    },
+    privateDeletedMessageHandlerDeps: {
+      contactsRepository,
       messagesRepository,
       auditRepository,
       notificationCooldowns,
@@ -98,11 +110,23 @@ function setup() {
       adminNumbers: [],
       logger: testLogger,
     },
+    privateCommandHandlerDeps: {
+      contactsRepository,
+      rulesRepository,
+      auditRepository,
+      identityMapRepository,
+      sender,
+      ai: undefined,
+      ownerNumbers: [],
+      adminNumbers: [],
+      logger: testLogger,
+    },
     logger: testLogger,
   });
   return {
     fake,
     groupsRepository,
+    contactsRepository,
     messagesRepository,
     rulesRepository,
     auditRepository,
@@ -307,5 +331,133 @@ describe('EventPipeline', () => {
     );
 
     expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
+  });
+});
+
+function waPrivateMessage(overrides: Partial<WAMessage> = {}): WAMessage {
+  return {
+    key: {
+      remoteJid: 'contact@s.whatsapp.net',
+      fromMe: false,
+      id: 'MSG1',
+    },
+    message: { conversation: 'hello' },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+    ...overrides,
+  } as WAMessage;
+}
+
+describe('EventPipeline — private messages', () => {
+  it('stores a private message only once privateMonitoringEnabled is explicitly on', async () => {
+    const { pipeline, contactsRepository, fake } = setup();
+
+    await pipeline.handleMessage(waPrivateMessage(), 'notify');
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
+
+    const contact = await contactsRepository.getByJid(ACCOUNT_ID, 'contact@s.whatsapp.net');
+    await contactsRepository.updateSettings(contact!.id, { privateMonitoringEnabled: true });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({ key: { ...waPrivateMessage().key, id: 'MSG2' } }),
+      'notify',
+    );
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(1);
+  });
+
+  it('a blocked contact is never automated for, even with monitoring/auto-reply enabled', async () => {
+    const { pipeline, contactsRepository, rulesRepository, fake, sender } = setup();
+
+    // First message discovers the contact.
+    await pipeline.handleMessage(waPrivateMessage(), 'notify');
+    const contact = await contactsRepository.getByJid(ACCOUNT_ID, 'contact@s.whatsapp.net');
+    await contactsRepository.updateSettings(contact!.id, {
+      privateMonitoringEnabled: true,
+      privateAutoReplyEnabled: true,
+    });
+    await rulesRepository.createForContact({
+      contactId: contact!.id,
+      name: 'Hello reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hello'] },
+        action: { type: 'SEND_MESSAGE', message: 'Hi there!' },
+        cooldownSeconds: 0,
+      },
+    });
+    await contactsRepository.updateContact(contact!.id, { blocked: true });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({ key: { remoteJid: 'contact@s.whatsapp.net', fromMe: false, id: 'MSG2' } }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+    // No new message stored either — blocked suppresses monitoring too.
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
+  });
+
+  it('auto-replies in a private chat once privateAutoReplyEnabled and a matching rule exist', async () => {
+    const { pipeline, contactsRepository, rulesRepository, sender } = setup();
+
+    await pipeline.handleMessage(
+      waPrivateMessage({ message: { conversation: 'what are your hours' } }),
+      'notify',
+    );
+    const contact = await contactsRepository.getByJid(ACCOUNT_ID, 'contact@s.whatsapp.net');
+    await contactsRepository.updateSettings(contact!.id, { privateAutoReplyEnabled: true });
+    await rulesRepository.createForContact({
+      contactId: contact!.id,
+      name: 'Hours reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({
+        key: { remoteJid: 'contact@s.whatsapp.net', fromMe: false, id: 'MSG2' },
+        message: { conversation: 'what are your hours' },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).toHaveBeenCalledWith(
+      'contact@s.whatsapp.net',
+      'We are open 9-5.',
+    );
+  });
+
+  it("contact A's settings never affect how messages from contact B are handled", async () => {
+    const { pipeline, contactsRepository, rulesRepository, sender } = setup();
+
+    await pipeline.handleMessage(
+      waPrivateMessage({ key: { remoteJid: 'a@s.whatsapp.net', fromMe: false, id: 'MSG-A' } }),
+      'notify',
+    );
+    const contactA = await contactsRepository.getByJid(ACCOUNT_ID, 'a@s.whatsapp.net');
+    await contactsRepository.updateSettings(contactA!.id, { privateAutoReplyEnabled: true });
+    await rulesRepository.createForContact({
+      contactId: contactA!.id,
+      name: 'Hours reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({
+        key: { remoteJid: 'b@s.whatsapp.net', fromMe: false, id: 'MSG-B' },
+        message: { conversation: 'what are your hours' },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
   });
 });

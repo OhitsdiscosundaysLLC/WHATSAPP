@@ -54,12 +54,48 @@ export function createDashboardRouter(): Router {
     });
   });
 
+  router.get('/contacts', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    await sendTemplate(res, 'contacts.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
+  });
+
+  router.get('/contacts/:id', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    const { id } = req.params as { id: string };
+    await sendTemplate(res, 'contact.html', {
+      __CSRF_TOKEN__: req.ownerSession.csrfToken,
+      __CONTACT_ID__: id,
+    });
+  });
+
   router.get('/activity', attachSession, async (req: Request, res: Response) => {
     if (!req.ownerSession) {
       res.redirect(302, '/login');
       return;
     }
     await sendTemplate(res, 'activity.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
+  });
+
+  router.get('/admins', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    await sendTemplate(res, 'admins.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
+  });
+
+  router.get('/health', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    await sendTemplate(res, 'health.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
   });
 
   return router;

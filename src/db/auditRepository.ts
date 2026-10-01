@@ -14,6 +14,7 @@ export type ActionStatus = 'success' | 'failed' | 'skipped';
 export interface RecordActionInput {
   accountId: string | undefined;
   groupId: string | undefined;
+  contactId?: string | undefined;
   ruleId: string | undefined;
   triggerWhatsappMessageId: string | undefined;
   actionType: ActionType;
@@ -25,6 +26,7 @@ export interface BotAction {
   id: string;
   accountId: string | undefined;
   groupId: string | undefined;
+  contactId: string | undefined;
   ruleId: string | undefined;
   triggerWhatsappMessageId: string | undefined;
   actionType: ActionType;
@@ -36,6 +38,7 @@ export interface BotAction {
 export interface RecordAuditInput {
   accountId: string | undefined;
   groupId: string | undefined;
+  contactId?: string | undefined;
   actor?: 'system' | 'owner';
   eventType: string;
   detail?: Record<string, unknown>;
@@ -45,6 +48,7 @@ export interface AuditLogEntry {
   id: string;
   accountId: string | undefined;
   groupId: string | undefined;
+  contactId: string | undefined;
   actor: string;
   eventType: string;
   detail: Record<string, unknown> | undefined;
@@ -55,6 +59,7 @@ interface BotActionRow {
   id: string;
   account_id: string | null;
   group_id: string | null;
+  contact_id: string | null;
   rule_id: string | null;
   trigger_whatsapp_message_id: string | null;
   action_type: ActionType;
@@ -67,6 +72,7 @@ interface AuditLogRow {
   id: string;
   account_id: string | null;
   group_id: string | null;
+  contact_id: string | null;
   actor: string;
   event_type: string;
   detail: Record<string, unknown> | null;
@@ -78,6 +84,7 @@ function fromActionRow(row: BotActionRow): BotAction {
     id: row.id,
     accountId: row.account_id ?? undefined,
     groupId: row.group_id ?? undefined,
+    contactId: row.contact_id ?? undefined,
     ruleId: row.rule_id ?? undefined,
     triggerWhatsappMessageId: row.trigger_whatsapp_message_id ?? undefined,
     actionType: row.action_type,
@@ -92,6 +99,7 @@ function fromAuditRow(row: AuditLogRow): AuditLogEntry {
     id: row.id,
     accountId: row.account_id ?? undefined,
     groupId: row.group_id ?? undefined,
+    contactId: row.contact_id ?? undefined,
     actor: row.actor,
     eventType: row.event_type,
     detail: row.detail ?? undefined,
@@ -113,6 +121,7 @@ export class AuditRepository {
       id: randomUUID(),
       account_id: input.accountId ?? null,
       group_id: input.groupId ?? null,
+      contact_id: input.contactId ?? null,
       rule_id: input.ruleId ?? null,
       trigger_whatsapp_message_id: input.triggerWhatsappMessageId ?? null,
       action_type: input.actionType,
@@ -130,6 +139,7 @@ export class AuditRepository {
       id: randomUUID(),
       account_id: input.accountId ?? null,
       group_id: input.groupId ?? null,
+      contact_id: input.contactId ?? null,
       actor: input.actor ?? 'system',
       event_type: input.eventType,
       detail: input.detail ?? null,
@@ -140,7 +150,7 @@ export class AuditRepository {
     }
   }
 
-  async listRecent(limit = 50, groupId?: string): Promise<AuditLogEntry[]> {
+  async listRecent(limit = 50, groupId?: string, contactId?: string): Promise<AuditLogEntry[]> {
     let query = this.supabase
       .from('whatsapp_audit_logs')
       .select('*')
@@ -149,6 +159,9 @@ export class AuditRepository {
     if (groupId) {
       query = query.eq('group_id', groupId);
     }
+    if (contactId) {
+      query = query.eq('contact_id', contactId);
+    }
     const { data, error } = await query;
     if (error) {
       throw new Error(`Failed to list audit log: ${error.message}`);
@@ -156,7 +169,7 @@ export class AuditRepository {
     return (data ?? []).map((row) => fromAuditRow(row as AuditLogRow));
   }
 
-  async listRecentActions(limit = 50, groupId?: string): Promise<BotAction[]> {
+  async listRecentActions(limit = 50, groupId?: string, contactId?: string): Promise<BotAction[]> {
     let query = this.supabase
       .from('bot_actions')
       .select('*')
@@ -164,6 +177,9 @@ export class AuditRepository {
       .limit(limit);
     if (groupId) {
       query = query.eq('group_id', groupId);
+    }
+    if (contactId) {
+      query = query.eq('contact_id', contactId);
     }
     const { data, error } = await query;
     if (error) {
