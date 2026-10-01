@@ -16,7 +16,7 @@ function main() {
       ownerCount: config.authorization.ownerNumbers.length,
       adminCount: config.authorization.adminNumbers.length,
     },
-    'Starting WhatsApp automation bot (Phase 2B: web dashboard + pairing — no automation/AI yet)',
+    'Starting WhatsApp automation bot (Phase 5: event pipeline, group config, deterministic rule engine — no AI yet)',
   );
 
   if (!config.dashboard.configured) {

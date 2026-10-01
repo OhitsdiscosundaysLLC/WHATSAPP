@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Groups</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link active" href="/groups">Groups</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>WhatsApp Groups</h2>
+        </div>
+        <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
+          Groups your connected WhatsApp accounts belong to. Every group starts with the bot OFF —
+          click a group to configure it.
+        </p>
+        <div id="groups-error" class="error-text"></div>
+        <div id="group-list" class="group-list"></div>
+        <div id="empty-state" class="empty-state hidden">
+          <p>No groups discovered yet.</p>
+          <p class="muted">
+            Groups appear here automatically once a connected WhatsApp account is a member of one.
+          </p>
+        </div>
+        <div id="unconfigured-state" class="empty-state hidden">
+          <p>Groups require Supabase to be configured.</p>
+          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/groups.js"></script>
+  </body>
+</html>

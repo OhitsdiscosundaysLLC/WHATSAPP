@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Group</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <meta name="group-id" content="__GROUP_ID__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link active" href="/groups">Groups</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <a class="back-link" href="/groups">&larr; All groups</a>
+      <div id="load-error" class="error-text"></div>
+
+      <div id="group-content" class="hidden">
+        <section style="margin-bottom: 28px">
+          <h2 id="group-subject" style="margin: 0 0 4px"></h2>
+          <p id="group-meta" class="muted" style="margin: 0; font-size: 13px"></p>
+        </section>
+
+        <section class="card" style="padding: 20px; margin-bottom: 24px">
+          <div class="section-head" style="margin-bottom: 4px">
+            <h2>Settings</h2>
+          </div>
+          <p class="muted" style="font-size: 13px; margin-top: 0">
+            Every control starts OFF for a newly discovered group. Nothing automates itself until
+            you turn it on here.
+          </p>
+          <div id="settings-error" class="error-text"></div>
+          <div id="settings-toggles"></div>
+
+          <div style="margin-top: 16px">
+            <label class="field-label" for="group-instructions"
+              >Custom group instructions <span class="badge-soon">Not yet used</span></label
+            >
+            <textarea
+              id="group-instructions"
+              placeholder="Stored for a future phase — not read by any feature yet."
+            ></textarea>
+            <button class="btn btn-sm" id="save-instructions-btn" style="margin-top: 8px">
+              Save
+            </button>
+          </div>
+        </section>
+
+        <section style="margin-bottom: 24px">
+          <div class="section-head">
+            <h2>Rules</h2>
+            <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
+          </div>
+          <div id="rules-error" class="error-text"></div>
+
+          <div id="rule-form" class="card hidden" style="padding: 18px; margin-bottom: 14px">
+            <h3 style="margin: 0 0 12px; font-size: 15px">New rule — N distinct people respond</h3>
+            <div class="field">
+              <label class="field-label" for="rule-name">Name</label>
+              <input type="text" id="rule-name" placeholder="e.g. Five people congratulate" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="rule-phrases"
+                >Qualifying phrases (comma-separated)</label
+              >
+              <textarea
+                id="rule-phrases"
+                placeholder="congrats, congratulations, noted sir, okay sir"
+              ></textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="rule-match-mode">Match mode</label>
+              <select id="rule-match-mode">
+                <option value="contains">Contains any phrase</option>
+                <option value="exact">Exact match</option>
+                <option value="keyword_any">Any whole word matches</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="rule-threshold">Distinct people required</label>
+              <input type="text" inputmode="numeric" id="rule-threshold" value="5" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="rule-cooldown">Cooldown (seconds, 0 = none)</label>
+              <input type="text" inputmode="numeric" id="rule-cooldown" value="0" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="rule-action-type"
+                >When the threshold is reached</label
+              >
+              <select id="rule-action-type">
+                <option value="SEND_MESSAGE">Send a message to this group</option>
+                <option value="NOTIFY_OWNER">Notify the owner (not the group)</option>
+                <option value="LOG_ONLY">Log only — don't send anything</option>
+              </select>
+            </div>
+            <div class="field" id="rule-message-field">
+              <label class="field-label" for="rule-message">Message</label>
+              <textarea id="rule-message" placeholder="Thanks everyone!"></textarea>
+            </div>
+            <div class="rule-actions">
+              <button class="btn btn-primary btn-sm" id="save-rule-btn">Create Rule</button>
+              <button class="btn btn-ghost btn-sm" id="cancel-rule-btn">Cancel</button>
+            </div>
+          </div>
+
+          <div id="rule-list" class="group-list"></div>
+          <div id="rules-empty" class="empty-state hidden">
+            <p>No rules yet for this group.</p>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head">
+            <h2>Recent Activity</h2>
+          </div>
+          <div class="card">
+            <div id="activity-list" class="activity-list"></div>
+            <div id="activity-empty" class="empty-state hidden">
+              <p>No activity recorded yet for this group.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script src="/group.js"></script>
+  </body>
+</html>

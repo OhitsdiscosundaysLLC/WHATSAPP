@@ -1,92 +1,112 @@
 # Architecture
 
-## Layering
+## Layering (as implemented — Phase 4+5)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ WhatsApp (via Baileys socket)                                │
 └───────────────┬────────────────────────────────────────────┘
-                 │ raw library events
+                 │ raw library events (messages.upsert, groups.upsert/update)
 ┌───────────────▼────────────────────────────────────────────┐
-│ whatsapp/  — connection lifecycle, auth, event subscription  │
-│   client.ts   connect/reconnect, socket lifecycle            │
-│   auth.ts     credential/session persistence                 │
-│   events.ts   subscribes to socket events, normalizes shape  │
-│   messages.ts outgoing-message helpers                       │
-│   calls.ts    call event normalization                       │
-│   media.ts    media download/decrypt helpers                 │
-└───────────────┬────────────────────────────────────────────┘
-                 │ normalized internal events
-┌───────────────▼────────────────────────────────────────────┐
-│ handlers/  — one handler per event category, each responsible│
-│              for loading context (group config, etc.) and    │
-│              delegating to services/rules                    │
-│   messageHandler.ts    groupHandler.ts   privateHandler.ts   │
-│   commandHandler.ts    deletionHandler.ts                     │
-│   callHandler.ts       mediaHandler.ts                        │
+│ whatsapp/connectionManager.ts — connection lifecycle owner.   │
+│ Fans out raw Baileys events via onMessage/onGroupsDiscovered  │
+│ callbacks; exposes sendTextMessage(). Interprets nothing.     │
 └───────────────┬────────────────────────────────────────────┘
                  │
-┌───────────────▼────────────────────────────────────────────┐
-│ rules/  — decides IF and HOW to act; AI is a dependency it   │
-│           calls only when a matched rule needs it            │
-│   ruleEngine.ts   groupRules.ts   triggerDetector.ts          │
-│   conditionEvaluator.ts   actionExecutor.ts                   │
-└───────────────┬────────────────────────────────────────────┘
-                 │
-┌───────────────▼────────────────────────────────────────────┐
-│ services/  — stateless-ish integrations used by the layers   │
-│              above: persistence, AI, logging                 │
-│   database.ts  messageStore.ts  mediaStore.ts  groupService.ts│
-│   ruleService.ts  callService.ts  ai.ts  logger.ts  ...       │
-└────────────────────────────────────────────────────────────┘
+     ┌───────────┴────────────┐
+     ▼                         ▼
+┌─────────────────────┐  ┌──────────────────────────────┐
+│ whatsapp/groups/     │  │ whatsapp/events/              │
+│   groupDiscovery.ts  │  │   messageNormalizer.ts (pure)  │
+│   upserts discovered │  │   eventPipeline.ts: dedup →    │
+│   groups, safe-      │  │   group lookup → settings      │
+│   default settings   │  │   gate → optional store →      │
+│                       │  │   optional rule evaluation     │
+└──────────┬───────────┘  └───────────────┬───────────────┘
+           │                              │ (only when bot_enabled)
+           ▼                              ▼
+┌──────────────────────┐      ┌──────────────────────────┐
+│ db/groupsRepository   │      │ rules/ruleEngine.ts        │
+│ db/messagesRepository │      │   loads enabled rules,     │
+│ (Supabase-backed —    │      │   evaluates response_      │
+│  see ADR-012)         │      │   threshold, durable state │
+└───────────────────────┘      │   via db/ruleStateRepository│
+                                 │   classifier: rules/        │
+                                 │   classifiers/ (deterministic│
+                                 │   today; AI pluggable later) │
+                                 └───────────────┬───────────┘
+                                                  │ fires
+                                                  ▼
+                                 ┌──────────────────────────┐
+                                 │ rules/actionEngine.ts      │
+                                 │   SEND_MESSAGE / LOG_ONLY / │
+                                 │   NOTIFY_OWNER, via the     │
+                                 │   connectionManager's       │
+                                 │   sendTextMessage()          │
+                                 └───────────────┬───────────┘
+                                                  ▼
+                                 ┌──────────────────────────┐
+                                 │ db/auditRepository.ts      │
+                                 │   bot_actions + whatsapp_audit_logs │
+                                 │   — the dashboard Activity │
+                                 │   page reads from here     │
+                                 └──────────────────────────┘
 ```
 
 `commands/` (WhatsApp-native `.bot on` style commands) and `moderation/`
-(kick/ban/warn) sit alongside `rules/` as other producers of actions that go
-through the same `actionExecutor`, so every action — whether triggered by a
-rule or an explicit owner command — is logged and permission-checked the same
-way.
+(kick/ban/warn) are explicitly **not built yet** (see
+`docs/DEVELOPMENT_PLAN.md`) — when they land, they'll be other producers of
+actions that go through the same `actionEngine.ts`, so every action, however
+triggered, is logged and permission-checked the same way.
 
 ## Why AI is not in the hot path
 
-Every inbound event hits the rule engine first. The rule engine's job is to
-answer, as cheaply as possible:
-
-1. Is automation even on for this chat? (group disabled → stop immediately)
-2. Does any configured rule's _trigger_ match this event at all (keyword,
-   message type, participant-count threshold, command prefix, etc.)?
-3. Only if a trigger matches and the rule is marked as needing semantic
-   judgement (e.g. "is this response _positive_?") does the rule engine call
-   `services/ai.ts`.
-4. The AI call returns a narrow, structured answer (e.g. a classification),
-   not a freeform reply. The rule engine — not the AI — remains responsible
-   for counting qualifying users, checking cooldowns, and deciding whether to
-   fire the configured action.
-
-This keeps per-message OpenAI usage close to zero in the common case (no
-rules matched) and makes AI usage auditable and bounded (Phase 6 logs every
-AI call with its purpose, rule, and group).
+`rules/classifiers/responseClassifier.ts` defines a `ResponseClassifier`
+interface with exactly one method (`classify(text, config) => Promise<boolean>`),
+implemented today by `DeterministicResponseClassifier` (exact/contains/
+keyword matching, no network call, no cost). `RuleEngine` depends only on
+this interface, never on OpenAI directly — a future `AIResponseClassifier`
+plugs in by implementing the same interface, without the rule engine's
+control flow changing at all. This keeps per-message AI usage at exactly
+zero until Phase 6 actually adds it, and bounds where "AI" can even be
+reached from: only inside a classifier, never as the default path for every
+incoming message. See docs/DECISIONS.md ADR-012.
 
 ## Idempotency
 
-WhatsApp can redeliver events (reconnects, retries). Two places need
-idempotency:
+WhatsApp can redeliver events (reconnects, retries). Two separate
+mechanisms, deliberately not conflated:
 
-- **Storage**: messages/events are upserted keyed by WhatsApp's own stable
-  identifier (message key: `remoteJid` + `id` + `fromMe`), so storing the
-  same event twice is a no-op, not a duplicate row.
-- **Actions**: before executing an action, the action executor checks
-  `bot_actions` for an existing record keyed by `(rule_id, trigger_message_id)`
-  (or the equivalent natural key for non-rule actions). If one exists, the
-  action is skipped. This is what prevents the "5-person congratulations
-  rule" from firing twice if the 5th qualifying message is processed twice.
+- **Event dedup**: `whatsapp_processed_events` — a composite-PK table
+  `(account_id, chat_jid, whatsapp_message_id)`, written unconditionally for
+  every inbound message by `MessagesRepository.markProcessed()`, independent
+  of any group's settings. A Postgres unique-constraint violation (code
+  `23505`) IS the "already processed" signal — `EventPipeline` reads it as
+  `false` and stops immediately, before storage or rule evaluation run
+  again. See `src/whatsapp/events/eventPipeline.ts`.
+- **Rule firing**: `rule_matches.fired`, flipped exactly once via an atomic
+  compare-and-set (`UPDATE ... WHERE fired = false`, via
+  `RuleStateRepository.tryMarkFired()`). Distinct qualifying responders are
+  tracked in `rule_match_responders`, whose composite primary key
+  `(rule_match_id, sender_jid)` makes "N distinct people" a schema-level
+  guarantee, not an application-level count that could drift.
+
+Both survive a process restart with zero in-memory state — see
+`src/db/ruleStateRepository.test.ts` and `src/rules/ruleEngine.test.ts` for
+restart-simulation tests that prove it directly.
 
 ## Per-group isolation
 
-Every piece of config, every rule, and every cooldown/dedup record is scoped
-by `group_id` (or contact id, for DMs). The rule engine only ever loads and
-evaluates rules for the specific chat an event belongs to — there is no
-global rule list applied everywhere. See `docs/DATABASE.md`.
+Every piece of config (`group_settings`), every rule (`group_rules`), and
+every cooldown/dedup record (`rule_matches`, `rule_cooldowns`) is scoped by
+`group_id`, which is itself scoped by `account_id` (two accounts can have a
+group with the identical WhatsApp JID — e.g. the same group added via two
+different connected numbers — and they're still two separate rows, two
+separate rule sets, two separate settings). `EventPipeline`/`RuleEngine`
+only ever load and evaluate rules for the one group an incoming event
+belongs to — there is no global rule list applied everywhere. See
+`docs/DATABASE.md` and the isolation tests in `src/db/groupsRepository.test.ts`,
+`src/rules/ruleEngine.test.ts`, and `src/web/groupRoutes.test.ts`.
 
 ## WhatsApp connection lifecycle (Phase 2)
 
@@ -210,17 +230,25 @@ web/
   authMiddleware.ts        attachSession / requireAuth / requireCsrf
   authRoutes.ts             POST /login, POST /logout
   dashboardRoutes.ts        GET /login, GET / (dashboard HTML + CSRF inject),
-                            static assets (styles.css, login.js, dashboard.js)
+                            GET /groups, /groups/:id, /activity (Phase 4+5
+                            pages, same CSRF-inject pattern), static assets
   accountRoutes.ts          /api/accounts/** — list/create/reconnect/
                             disconnect/remove, pairing-code request, and
                             the per-account SSE status stream
+  groupRoutes.ts (Phase 4+5) /api/groups/** — list/detail, settings PATCH,
+                            rule CRUD (create/update/enable-disable/delete);
+                            503s clearly if Supabase isn't configured rather
+                            than silently doing nothing
+  activityRoutes.ts (Phase 4+5) /api/activity — recent whatsapp_audit_logs +
+                            bot_actions, optionally filtered by groupId
   qrImage.ts                 raw QR string -> PNG data URL, server-side,
                             before anything reaches the browser
   public/                    static HTML/CSS/JS (no secrets — safe to be
                             publicly fetchable; the API behind them still
                             requires auth)
-  views/dashboard.html       template; the one place a CSRF token is
-                            server-injected
+  views/                      dashboard.html, groups.html, group.html,
+                            activity.html — each a template with a
+                            server-injected CSRF token
 ```
 
 `src/server.ts` composes all of this: `createAuthRouter()` and
@@ -251,10 +279,29 @@ injected component status — see `src/server.ts`), minimal Express app.
 manager, reconnect policy, auth-state abstraction, QR terminal display),
 wired into startup/shutdown and `/health`/`/ready`.
 
-**Phase 2B** (this phase) — multi-account registry
-(`src/whatsapp/accountManager.ts`), the authenticated web dashboard
-(`src/web/`), pairing-code support, SSE-based live status, and Render
-deployment configuration (`render.yaml`, `docs/DEPLOYMENT.md`). No message
-content is read, stored, or acted upon — `handlers/`, `rules/`,
-`commands/`, and `moderation/` still don't exist, per
-`docs/DEVELOPMENT_PLAN.md`.
+**Phase 2B** — multi-account registry (`src/whatsapp/accountManager.ts`),
+the authenticated web dashboard (`src/web/`), pairing-code support,
+SSE-based live status, and Render deployment configuration (`render.yaml`,
+`docs/DEPLOYMENT.md`). No message content is read, stored, or acted upon
+yet at this point.
+
+**Phase 3** — durable, encrypted, Supabase-backed session persistence
+(`src/db/encryption.ts`, `src/whatsapp/auth/supabaseAuthStateProvider.ts`,
+`src/whatsapp/accountStore.ts`), replacing local-file storage in production.
+See docs/DECISIONS.md ADR-011.
+
+**Phase 4+5** (this phase) — the actual automation product, built on top of
+the Phase 1-3 infrastructure without modifying the connection/auth layers:
+the message/event pipeline (`src/whatsapp/events/`), WhatsApp group
+discovery and per-group configuration (`src/whatsapp/groups/`,
+`src/db/groupsRepository.ts`), the deterministic rule engine and action
+engine (`src/rules/`), durable rule state (`src/db/ruleStateRepository.ts`),
+audit logging (`src/db/auditRepository.ts`), and the dashboard's Groups /
+group-detail / Activity pages (`src/web/groupRoutes.ts`,
+`src/web/activityRoutes.ts`). The one implemented rule type is
+`response_threshold` (the "N distinct people respond" pattern). AI
+classification, deleted-message recovery, view-once media, call automation,
+moderation actions, and the WhatsApp-native command system are explicitly
+**not built yet** — interfaces are shaped so they can plug in later (see
+"Why AI is not in the hot path" above) without this phase's work being
+reworked. See docs/DECISIONS.md ADR-012 for the full design rationale.

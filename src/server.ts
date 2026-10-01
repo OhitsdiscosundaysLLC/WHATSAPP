@@ -9,8 +9,10 @@ import {
 } from './services/healthService';
 import { createChildLogger } from './services/logger';
 import { createAccountRouter } from './web/accountRoutes';
+import { createActivityRouter } from './web/activityRoutes';
 import { createAuthRouter } from './web/authRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
+import { createGroupRouter } from './web/groupRoutes';
 import type { WhatsAppStatus } from './whatsapp/types';
 
 const log = createChildLogger('http');
@@ -72,6 +74,12 @@ export function createServer({
   // Authenticated WhatsApp account management API, including the QR/pairing
   // SSE stream. Never reachable without a valid owner session.
   app.use('/api/accounts', createAccountRouter());
+
+  // Authenticated group configuration + rule builder API (Phase 4+5).
+  app.use('/api/groups', createGroupRouter());
+
+  // Authenticated read-only activity feed (Phase 4+5).
+  app.use('/api/activity', createActivityRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });

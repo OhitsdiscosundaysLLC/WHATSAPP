@@ -29,20 +29,39 @@ before the next begins — this file is updated as phases complete.
       Session durability across redeploys is still the unsolved Phase 3
       problem (ADR-006) — the dashboard doesn't change that, it just makes
       the existing (re-)pairing flow usable without a terminal.
-- [ ] **Phase 3 — Supabase database**
-      Wire up `@supabase/supabase-js`, implement the Phase-3 minimum schema
-      from `docs/DATABASE.md` as migrations, `services/database.ts`,
-      `services/messageStore.ts`. Health endpoint starts reporting real DB
-      status.
-- [ ] **Phase 4 — Group configuration**
-      `groupService.ts`, `group_settings` CRUD, per-group enable/disable,
-      the "off by default" enforcement at the handler layer.
-- [ ] **Phase 5 — Rule engine**
-      `ruleEngine.ts`, `triggerDetector.ts`, `conditionEvaluator.ts`,
-      `actionExecutor.ts`. Implement the response-threshold rule type (the
-      "5-person congratulations" example) end-to-end without AI first
-      (exact-keyword matching), proving the counting/dedup/idempotency
-      mechanics before AI classification is layered in.
+- [x] **Phase 3 — Supabase database (durable session persistence)**
+      Wired up `@supabase/supabase-js` server-side only. AES-256-GCM
+      application-level encryption (`src/db/encryption.ts`), a
+      `SupabaseAuthStateProvider` storing the full Baileys signal key store
+      (not just creds.json), and `SupabaseAccountStore` replacing the JSON
+      manifest in production — both selected automatically alongside
+      `FileAuthStateProvider`/`JsonManifestAccountStore` for local dev (see
+      ADR-011). `/health` reports real database status and which auth
+      storage mode is active. WhatsApp sessions now survive a Render
+      restart/redeploy without a new QR scan.
+- [x] **Phase 4 — Event pipeline & group configuration**
+      The production message/event pipeline (`src/whatsapp/events/`):
+      normalization, idempotency gate, group/private context
+      identification, group discovery (`src/whatsapp/groups/`,
+      `groupFetchAllParticipating()` + live `groups.upsert`/`.update`),
+      per-group settings (`src/db/groupsRepository.ts`) with every toggle
+      safe-default OFF, optional message storage gated on
+      `monitoring_enabled`. Dashboard Groups list + group detail pages
+      (`src/web/groupRoutes.ts`, `src/web/views/groups.html`,
+      `group.html`).
+- [x] **Phase 5 — Rule engine**
+      `src/rules/ruleEngine.ts`, `src/rules/classifiers/` (deterministic
+      exact/contains/keyword matching via a `ResponseClassifier` interface
+      AI can later plug into — ADR-012), `src/rules/actionEngine.ts`
+      (`SEND_MESSAGE`/`LOG_ONLY`/`NOTIFY_OWNER`). Implemented the
+      response-threshold rule type (the "5-person congratulations"
+      example) end-to-end without AI: durable threshold progress and
+      distinct-sender counting (`src/db/ruleStateRepository.ts`, schema-
+      enforced via `rule_match_responders`' composite primary key), atomic
+      fires-exactly-once guarantee, cooldowns, and full audit logging
+      (`src/db/auditRepository.ts`) — all proven to survive a process
+      restart by dedicated tests before any AI classification gets layered
+      in (Phase 6).
 - [ ] **Phase 6 — AI service**
       `services/ai.ts`, OpenAI integration, structured-output classification
       calls, `ai_usage` logging, wiring AI into the rule engine as an

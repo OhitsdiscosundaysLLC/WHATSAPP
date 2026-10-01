@@ -1,16 +1,30 @@
 import { randomUUID } from 'crypto';
 import path from 'path';
 import { config } from '../config/config';
+import { AuditRepository } from '../db/auditRepository';
+import { GroupsRepository } from '../db/groupsRepository';
+import { MessagesRepository } from '../db/messagesRepository';
+import { RulesRepository } from '../db/rulesRepository';
+import { RuleStateRepository } from '../db/ruleStateRepository';
 import { getSupabaseClient } from '../db/supabaseClient';
+import { DeterministicResponseClassifier } from '../rules/classifiers/responseClassifier';
+import { RuleEngine } from '../rules/ruleEngine';
 import { createChildLogger } from '../services/logger';
 import { type AccountStore, JsonManifestAccountStore, SupabaseAccountStore } from './accountStore';
 import { FileAuthStateProvider } from './auth/fileAuthStateProvider';
 import { SupabaseAuthStateProvider } from './auth/supabaseAuthStateProvider';
 import { resolveAuthStorageMode, type AuthStorageMode } from './authStorageMode';
-import { WhatsAppConnectionManager } from './connectionManager';
+import { WhatsAppConnectionManager, type ConnectionManagerOptions } from './connectionManager';
+import { EventPipeline } from './events/eventPipeline';
+import { handleDiscoveredGroups } from './groups/groupDiscovery';
 import type { PairingListener, PairingSnapshot, WhatsAppStatus } from './types';
 
 const log = createChildLogger('whatsapp:accounts');
+
+/** OWNER_WHATSAPP_NUMBERS, formatted as WhatsApp JIDs for NOTIFY_OWNER. */
+function ownerJids(): string[] {
+  return config.authorization.ownerNumbers.map((number) => `${number}@s.whatsapp.net`);
+}
 
 export interface AccountSummary {
   id: string;
@@ -258,13 +272,75 @@ export class AccountManager {
           })
         : new FileAuthStateProvider(path.join(this.authRootDir, accountId));
 
-    const manager = new WhatsAppConnectionManager({
+    // `manager` is referenced (not called) inside `sender` before it's
+    // assigned below — safe, since sendTextMessage is only ever invoked
+    // later, after construction completes and the account actually
+    // connects. See docs/DECISIONS.md ADR-012.
+    // Must be `let`, declared before the closures below that capture it —
+    // `const` can't express "declared now, assigned once, later."
+    // eslint-disable-next-line prefer-const
+    let manager: WhatsAppConnectionManager;
+
+    let onMessage: ConnectionManagerOptions['onMessage'];
+    let onGroupsDiscovered: ConnectionManagerOptions['onGroupsDiscovered'];
+
+    // The Phase 4+5 event pipeline / group discovery / rule engine are
+    // Supabase-only (same reasoning as the Phase 3 auth/account storage
+    // split — see ADR-011/ADR-012): there is no local-file equivalent for
+    // groups, messages, or rules, so this wiring simply doesn't exist in
+    // local-dev (file-storage) mode. The dashboard's Groups/Activity pages
+    // explain this plainly rather than silently doing nothing.
+    if (this.storageMode?.kind === 'supabase') {
+      const supabase = getSupabaseClient();
+      const groupsRepository = new GroupsRepository(supabase);
+      const messagesRepository = new MessagesRepository(supabase);
+      const rulesRepository = new RulesRepository(supabase);
+      const ruleStateRepository = new RuleStateRepository(supabase);
+      const auditRepository = new AuditRepository(supabase);
+
+      const ruleEngine = new RuleEngine({
+        rulesRepository,
+        ruleStateRepository,
+        auditRepository,
+        classifier: new DeterministicResponseClassifier(),
+        sender: { sendTextMessage: (jid, text) => manager.sendTextMessage(jid, text) },
+        ownerJids: ownerJids(),
+        logger: createChildLogger(`whatsapp:account:${accountId}:rules`),
+      });
+
+      const eventPipeline = new EventPipeline({
+        accountId,
+        groupsRepository,
+        messagesRepository,
+        ruleEngine,
+        auditRepository,
+        logger: createChildLogger(`whatsapp:account:${accountId}:events`),
+      });
+
+      onMessage = (message, type) => {
+        eventPipeline
+          .handleMessage(message, type)
+          .catch((err: unknown) =>
+            log.error({ err, accountId }, 'Failed to process WhatsApp message event'),
+          );
+      };
+
+      onGroupsDiscovered = (groups) => {
+        handleDiscoveredGroups(accountId, groups, groupsRepository).catch((err: unknown) =>
+          log.error({ err, accountId }, 'Failed to record discovered WhatsApp groups'),
+        );
+      };
+    }
+
+    manager = new WhatsAppConnectionManager({
       authProvider,
       logger: createChildLogger(`whatsapp:account:${accountId}`),
       reconnect: {
         baseMs: config.whatsapp.reconnectBaseMs,
         maxMs: config.whatsapp.reconnectMaxMs,
       },
+      ...(onMessage ? { onMessage } : {}),
+      ...(onGroupsDiscovered ? { onGroupsDiscovered } : {}),
     });
 
     manager.onUpdate((snapshot) => {

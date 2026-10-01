@@ -616,3 +616,140 @@ affect the live WhatsApp connection it describes.
   set explicitly by application code on every write — one less moving part,
   and no dependency on a server-side trigger function existing and staying
   in sync with the application's understanding of when a row changed.
+
+---
+
+## ADR-012: Event pipeline + deterministic rule engine (Phase 4+5)
+
+**Status:** Accepted (Phase 4+5)
+
+### Context
+
+Phase 3 made the WhatsApp connection durable; the account still did nothing
+with messages. The product goal, stated explicitly, is **not** "every
+message → OpenAI → response" — it's a configurable pipeline: event →
+normalize → identify context → load configuration → evaluate rules →
+decide whether AI is needed (not yet — Phase 6) → act → audit. This ADR
+records the decisions behind that pipeline, built without modifying the
+Phase 1-3 connection/auth layers.
+
+### Decision: connection manager stays dumb, fans out raw events
+
+`WhatsAppConnectionManager` gained exactly three things: an `onMessage`
+callback (fired per `WAMessage` from `messages.upsert`), an
+`onGroupsDiscovered` callback (fired from `groups.upsert`/`groups.update`
+and once per connect via Baileys' own `groupFetchAllParticipating()` — not
+a hand-rolled "list all groups" call), and `sendTextMessage()`. It still
+does zero content interpretation — that was a hard requirement to avoid
+re-architecting a class that was already correct and already tested.
+Interpretation lives entirely in new modules (`src/whatsapp/events/`,
+`src/whatsapp/groups/`, `src/rules/`) that depend on the connection
+manager, never the reverse.
+
+### Decision: two separate idempotency mechanisms, not one
+
+- `whatsapp_processed_events` — unconditional, for every inbound message,
+  independent of any group's settings. This is what "WhatsApp events may
+  be delivered more than once" (product spec) actually requires: a
+  redelivered event must never be evaluated twice, whether or not the
+  group it's in has monitoring or the bot turned on.
+- `rule_matches.fired` — a separate, atomic compare-and-set
+  (`UPDATE ... WHERE fired = false`), because "fires exactly once" is a
+  property of a _rule's outcome_ for a given target message, not of the
+  _message_ that happened to push it over the threshold. Conflating the
+  two would mean the 5th qualifying response (the one that crosses the
+  threshold) gets the same dedup treatment as the 6th, 7th, ... — which
+  works, but obscures that these are different guarantees for different
+  failure modes (duplicate delivery vs. a genuine race between two
+  concurrent evaluations of the same target message).
+
+### Decision: distinct-sender counting is a schema-level guarantee
+
+`rule_match_responders`'s primary key is `(rule_match_id, sender_jid)`.
+"Five responses from ONE person must NOT count as five people" (product
+spec #13) is enforced by Postgres rejecting/no-opping a duplicate insert,
+not by an application-level `Set` that could in principle be constructed
+wrong. `RuleStateRepository.countDistinctResponders()` is then just "how
+many rows exist" — nothing clever, because the cleverness already happened
+at the schema level.
+
+### Decision: `ResponseClassifier` is an interface, not a function call into OpenAI
+
+The product spec is explicit that Phase 5 must implement deterministic
+qualification first and must not tightly couple the rule engine to AI.
+`src/rules/classifiers/responseClassifier.ts` defines
+`ResponseClassifier { kind, classify(text, config): Promise<boolean> }`;
+`DeterministicResponseClassifier` is the only implementation today
+(exact/contains/keyword, case-insensitive). `RuleEngine` is constructed
+with a classifier instance via dependency injection — it has no import of,
+or awareness of, any AI provider. A future `AIResponseClassifier`
+satisfies the exact same interface; nothing in `ruleEngine.ts` needs to
+change when it's added.
+
+### Decision: target-message identification is reply-only, for now
+
+`response_threshold.config.targetMessageMatch` is a fixed literal
+`'quoted'` (validated by `src/rules/ruleConfig.ts`'s zod schema) rather
+than an open string. A qualifying response must carry Baileys'
+`contextInfo.stanzaId` pointing at the message it's replying to — "use
+WhatsApp quoted/reply metadata when available" (spec #12) is read as a
+requirement, not a suggestion, because without it there's no reliable way
+to know which of potentially many recent messages a short reply like
+"congrats" is actually responding to. The field is a fixed literal rather
+than an enum of one so that a second matching strategy (e.g. "any message
+in the last N minutes," for groups that don't reply-thread) can be added
+later as a genuinely new, explicit option — not inferred from absence.
+
+### Decision: groups/rules/messages/audit storage is Supabase-only
+
+Same reasoning as ADR-011's auth-state/account-storage split: there is no
+local-file equivalent for `whatsapp_groups`, `group_rules`,
+`whatsapp_messages`, or the audit tables. Running this phase's features in
+local development without Supabase configured means the Groups and
+Activity dashboard pages show a plain "requires Supabase" message
+(`503 supabase_not_configured` from `src/web/groupRoutes.ts` /
+`activityRoutes.ts`) rather than a parallel JSON-file implementation of a
+relational, multi-table, foreign-key-linked schema — building and
+maintaining that parallel implementation was judged not worth it for a
+feature set that only makes sense once an account is actually running in
+production.
+
+### Decision: safe defaults are enforced at the point of row creation, not just documented
+
+`GroupsRepository.ensureSettings()` is the only path that creates a
+`group_settings` row, and it always writes
+`DEFAULT_GROUP_SETTINGS` (every boolean `false`) — called automatically
+the moment a group is discovered, before the owner has looked at it. "The
+owner explicitly enables groups" (spec) is therefore not just a documented
+intention; a newly discovered group is structurally incapable of having
+automation on, because no code path exists that creates its settings row
+any other way.
+
+### Decision: `bot_enabled` gates rule evaluation; `monitoring_enabled` gates storage — independently
+
+These are deliberately two separate toggles rather than one, because they
+answer different questions: "should this group's messages be archived?"
+(monitoring — useful on its own, e.g. ahead of a future deleted-message
+archive feature) vs. "should rules evaluate and potentially act in this
+group?" (bot). A group can have monitoring on with the bot off (build a
+message history without risking an automated send), or the bot on without
+monitoring (rules run, but the full message archive isn't kept) —
+`src/whatsapp/events/eventPipeline.ts` checks them as two independent
+`if` statements, not a combined flag.
+
+### Alternatives considered
+
+- **AI-first classification** ("every message → OpenAI → response"):
+  explicitly rejected by the product spec itself — see "Why AI is not in
+  the hot path" in docs/ARCHITECTURE.md.
+- **A single `message.received` audit event for every incoming group
+  message, regardless of settings**: rejected as default behavior — it
+  would silently grow `whatsapp_audit_logs` for every group the account is a member
+  of, including ones the owner has never configured, undermining "safe
+  defaults" in spirit even though it wouldn't automate anything. Audit
+  events are recorded when `bot_enabled` is true (the group is actually
+  being watched), not unconditionally.
+- **Storing the full raw `WAMessage` protobuf in `whatsapp_messages`**:
+  rejected per the product spec's own instruction ("do not unnecessarily
+  store giant raw Baileys payloads") and docs/SECURITY.md's general
+  data-minimization stance; only the normalized fields are persisted.

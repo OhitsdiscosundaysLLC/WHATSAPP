@@ -1,0 +1,269 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { WAMessage } from '@whiskeysockets/baileys';
+import pino from 'pino';
+import { describe, expect, it, vi } from 'vitest';
+import { AuditRepository } from '../../db/auditRepository';
+import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
+import { GroupsRepository } from '../../db/groupsRepository';
+import { MessagesRepository } from '../../db/messagesRepository';
+import { RulesRepository } from '../../db/rulesRepository';
+import { RuleStateRepository } from '../../db/ruleStateRepository';
+import { DeterministicResponseClassifier } from '../../rules/classifiers/responseClassifier';
+import { RuleEngine } from '../../rules/ruleEngine';
+import { EventPipeline } from './eventPipeline';
+
+const testLogger = pino({ level: 'silent' });
+const ACCOUNT_ID = 'acct-1';
+
+function waGroupMessage(overrides: Partial<WAMessage> = {}): WAMessage {
+  return {
+    key: {
+      remoteJid: 'group@g.us',
+      fromMe: false,
+      id: 'MSG1',
+      participant: 'sender@s.whatsapp.net',
+    },
+    message: { conversation: 'hello' },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+    ...overrides,
+  } as WAMessage;
+}
+
+function setup() {
+  const fake = new FakeSupabaseClient();
+  fake.defineUniqueConstraint('whatsapp_processed_events', [
+    'account_id',
+    'chat_jid',
+    'whatsapp_message_id',
+  ]);
+  const groupsRepository = new GroupsRepository(fake as unknown as SupabaseClient);
+  const messagesRepository = new MessagesRepository(fake as unknown as SupabaseClient);
+  const rulesRepository = new RulesRepository(fake as unknown as SupabaseClient);
+  const auditRepository = new AuditRepository(fake as unknown as SupabaseClient);
+  const sender = { sendTextMessage: vi.fn(async () => {}) };
+  const ruleEngine = new RuleEngine({
+    rulesRepository,
+    ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
+    auditRepository,
+    classifier: new DeterministicResponseClassifier(),
+    sender,
+    ownerJids: [],
+    logger: testLogger,
+  });
+  const pipeline = new EventPipeline({
+    accountId: ACCOUNT_ID,
+    groupsRepository,
+    messagesRepository,
+    ruleEngine,
+    auditRepository,
+    logger: testLogger,
+  });
+  return {
+    fake,
+    groupsRepository,
+    messagesRepository,
+    rulesRepository,
+    auditRepository,
+    pipeline,
+    sender,
+  };
+}
+
+describe('EventPipeline', () => {
+  it('a message from an undiscovered group is skipped safely (no throw)', async () => {
+    const { pipeline } = setup();
+    await expect(pipeline.handleMessage(waGroupMessage(), 'notify')).resolves.not.toThrow();
+  });
+
+  it('does not store a message when monitoring is off (safe default)', async () => {
+    const { pipeline, groupsRepository, fake } = setup();
+    await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+
+    await pipeline.handleMessage(waGroupMessage(), 'notify');
+
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
+  });
+
+  it('stores a message when monitoring is explicitly enabled', async () => {
+    const { pipeline, groupsRepository, fake } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { monitoringEnabled: true });
+
+    await pipeline.handleMessage(waGroupMessage(), 'notify');
+
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(1);
+  });
+
+  it('does not evaluate rules when bot is off, even if a matching rule exists', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        message: {
+          extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+        },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('evaluates rules when bot is on and the message qualifies', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        message: {
+          extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+        },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).toHaveBeenCalledWith('group@g.us', 'Thanks!');
+  });
+
+  it('idempotency: a redelivered event is processed only once', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+    const message = waGroupMessage({
+      message: {
+        extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+      },
+    });
+
+    await pipeline.handleMessage(message, 'notify');
+    await pipeline.handleMessage(message, 'notify'); // redelivered
+
+    expect(sender.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("never processes the bot's own outgoing message as an automation trigger", async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        key: { remoteJid: 'group@g.us', fromMe: true, id: 'MSG-OUT' },
+        message: {
+          extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+        },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not evaluate rules for offline-backlog ("append") messages', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        message: {
+          extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+        },
+      }),
+      'append',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('a private message is normalized/dedup-gated but never triggers rule evaluation or storage', async () => {
+    const { pipeline, fake, sender } = setup();
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        key: { remoteJid: 'someone@s.whatsapp.net', fromMe: false, id: 'MSG-DM' },
+        message: { conversation: 'hi' },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
+  });
+
+  it("group A's settings never affect how messages in group B are handled", async () => {
+    const { pipeline, groupsRepository, fake } = setup();
+    const groupA = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'a@g.us', 'A');
+    await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'b@g.us', 'B');
+    await groupsRepository.updateSettings(groupA.id, { monitoringEnabled: true });
+
+    await pipeline.handleMessage(
+      waGroupMessage({ key: { remoteJid: 'b@g.us', fromMe: false, id: 'MSG-B' } }),
+      'notify',
+    );
+
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
+  });
+});

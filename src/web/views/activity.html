@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Activity</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link active" href="/activity">Activity</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>Activity</h2>
+        </div>
+        <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
+          Recent automation activity across every group: messages seen, rule progress, rule fires,
+          and configuration changes. Never shows credentials, keys, or message content beyond what a
+          rule matched on.
+        </p>
+        <div id="activity-error" class="error-text"></div>
+        <div class="card">
+          <div id="activity-list" class="activity-list"></div>
+          <div id="activity-empty" class="empty-state hidden">
+            <p>No activity recorded yet.</p>
+            <p class="muted">Turn on a group's Bot or Monitoring to start seeing activity here.</p>
+          </div>
+        </div>
+        <div id="unconfigured-state" class="empty-state hidden">
+          <p>Activity history requires Supabase to be configured.</p>
+          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/activity.js"></script>
+  </body>
+</html>

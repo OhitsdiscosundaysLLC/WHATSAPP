@@ -1,12 +1,18 @@
 # Database Design (Supabase / Postgres)
 
-**Status:** the "Implemented" section below (WhatsApp account + auth-state
-persistence) is real and live as of Phase 3 — migration
-`supabase/migrations/20261001120000_whatsapp_core.sql`. Everything under
-"Minimum viable schema (target for Phase 5+)" further down is still a design
-reference for later phases (group config, rules, moderation, AI usage) —
-no migration exists for it yet. This document exists so later phases build
-toward a consistent schema instead of improvising table-by-table.
+**Status:** the two "Implemented" sections below are real and live —
+Phase 3 (WhatsApp account + auth-state persistence,
+`supabase/migrations/20261001120000_whatsapp_core.sql`) and Phase 4+5
+(event pipeline, group config, rule engine,
+`supabase/migrations/20261001140000_whatsapp_groups_rules.sql`).
+"Minimum viable schema (target for Phase 6+)" further down is still a
+design reference for genuinely unbuilt pieces (owner/admin identity beyond
+the `OWNER_WHATSAPP_NUMBERS` env var, private-contact settings, call
+events, AI usage accounting) — no migration exists for those yet, and the
+groups/rules/messages/bot_actions/audit_logs entries there are superseded
+by the real schema (see the Phase 4+5 section's note). This document exists
+so later phases build toward a consistent schema instead of improvising
+table-by-table.
 
 ## Implemented (Phase 3): WhatsApp account + auth-state persistence
 
@@ -78,6 +84,176 @@ scheme (`${category}-${id}.json`).
 Index: `(account_id, category)`, supporting bulk category reads (Baileys
 requests keys as `get(category, ids[])`) and account-removal cleanup.
 
+## Implemented (Phase 4+5): event pipeline, group config, rule engine
+
+Ten tables, applied via
+`supabase/migrations/20261001140000_whatsapp_groups_rules.sql`. Full
+rationale in `docs/DECISIONS.md` ADR-012. Same conventions as Phase 3: RLS
+enabled with no anon/authenticated policies, `updated_at` set by
+application code, `gen_random_uuid()` generated client-side (not a DB
+default — see `src/db/groupsRepository.ts` etc.) so every repository can
+immediately use the id it just inserted without a round-trip.
+
+This section **supersedes** the speculative `groups` / `group_settings` /
+`group_rules` / `messages` / `bot_actions` / `audit_logs` designs further
+down this document — the real schema differs from what was originally
+sketched (different column names, and three tables — `rule_matches`,
+`rule_match_responders`, `rule_cooldowns` — that weren't anticipated at
+all, needed for durable rule state). `admins`, `contacts`, `call_events`,
+and `ai_usage` remain genuinely unbuilt and are still accurately described
+by the speculative section.
+
+### `whatsapp_groups`
+
+Durable group registry. Identity is the WhatsApp group JID, never the
+display name (a rename updates `subject` in place — see
+`src/whatsapp/groups/groupDiscovery.ts`).
+
+| column             | type                                               | notes                              |
+| ------------------ | -------------------------------------------------- | ---------------------------------- |
+| id                 | uuid pk                                            |                                    |
+| account_id         | uuid, fk → whatsapp_accounts.id, on delete cascade |                                    |
+| whatsapp_group_jid | text                                               | identity, with account_id          |
+| subject            | text                                               | current display name               |
+| discovered_at      | timestamptz                                        |                                    |
+| updated_at         | timestamptz                                        |                                    |
+| **unique**         |                                                    | `(account_id, whatsapp_group_jid)` |
+
+### `group_settings`
+
+1:1 with `whatsapp_groups`. Every toggle defaults to `false` — see
+docs/DECISIONS.md ADR-012 on safe defaults. Columns beyond
+`bot_enabled`/`monitoring_enabled` are configuration architecture for
+features not yet implemented (Phase 6+) — accepted and persisted by the
+dashboard, but not read by any behavior yet.
+
+| column                          | type                             | notes                                                            |
+| ------------------------------- | -------------------------------- | ---------------------------------------------------------------- |
+| group_id                        | uuid pk, fk → whatsapp_groups.id |                                                                  |
+| bot_enabled                     | boolean default false            | master switch — gates rule evaluation                            |
+| monitoring_enabled              | boolean default false            | gates whatsapp_messages storage                                  |
+| ai_enabled                      | boolean default false            | not yet read by any feature                                      |
+| auto_reply_enabled              | boolean default false            | not yet read by any feature                                      |
+| deleted_message_archive_enabled | boolean default false            | not yet read by any feature                                      |
+| view_once_handling_enabled      | boolean default false            | not yet read by any feature                                      |
+| call_handling_enabled           | boolean default false            | not yet read by any feature                                      |
+| moderation_enabled              | boolean default false            | not yet read by any feature                                      |
+| custom_group_instructions       | text nullable                    | stored, not yet read                                             |
+| custom_ai_instructions          | text nullable                    | stored, not yet read                                             |
+| default_cooldown_seconds        | integer default 0                | reserved; per-rule cooldownSeconds is what's actually used today |
+| updated_at                      | timestamptz                      |                                                                  |
+
+### `whatsapp_processed_events`
+
+Always-on idempotency gate for every inbound message, independent of
+monitoring/bot settings.
+
+| column              | type                                               | notes                                         |
+| ------------------- | -------------------------------------------------- | --------------------------------------------- |
+| account_id          | uuid, fk → whatsapp_accounts.id, on delete cascade | part of pk                                    |
+| chat_jid            | text                                               | part of pk                                    |
+| whatsapp_message_id | text                                               | part of pk                                    |
+| processed_at        | timestamptz                                        |                                               |
+| **pk**              |                                                    | `(account_id, chat_jid, whatsapp_message_id)` |
+
+### `whatsapp_messages`
+
+Optional normalized archive, written only when a group's
+`monitoring_enabled` is true. Deliberately not a raw Baileys payload dump.
+
+| column                     | type                                                      | notes                                         |
+| -------------------------- | --------------------------------------------------------- | --------------------------------------------- |
+| id                         | uuid pk                                                   |                                               |
+| account_id                 | uuid, fk → whatsapp_accounts.id, on delete cascade        |                                               |
+| group_id                   | uuid nullable, fk → whatsapp_groups.id, on delete cascade |                                               |
+| chat_jid                   | text                                                      |                                               |
+| whatsapp_message_id        | text                                                      |                                               |
+| sender_jid                 | text                                                      | participant for group messages                |
+| from_me                    | boolean default false                                     |                                               |
+| message_type               | text                                                      | Baileys' `getContentType()` result            |
+| text_content               | text nullable                                             |                                               |
+| quoted_whatsapp_message_id | text nullable                                             | drives rule target-message matching           |
+| deleted / deleted_at       | boolean / timestamptz nullable                            | reserved for Phase 7                          |
+| created_at                 | timestamptz                                               |                                               |
+| **unique**                 |                                                           | `(account_id, chat_jid, whatsapp_message_id)` |
+
+Indexes: `(group_id, created_at)`, `(account_id, chat_jid, quoted_whatsapp_message_id)`.
+
+### `group_rules`
+
+| column                  | type                                             | notes                                                  |
+| ----------------------- | ------------------------------------------------ | ------------------------------------------------------ |
+| id                      | uuid pk                                          |                                                        |
+| group_id                | uuid, fk → whatsapp_groups.id, on delete cascade |                                                        |
+| name                    | text                                             | 1-80 chars                                             |
+| enabled                 | boolean default true                             |                                                        |
+| trigger_type            | text                                             | `response_threshold` is the only value implemented     |
+| config                  | jsonb                                            | strictly zod-validated — see `src/rules/ruleConfig.ts` |
+| created_at / updated_at | timestamptz                                      |                                                        |
+
+### `rule_matches`
+
+One row per `(rule, target WhatsApp message)` — the durable
+threshold-progress and fired-state record.
+
+| column                     | type                                         | notes                                   |
+| -------------------------- | -------------------------------------------- | --------------------------------------- |
+| id                         | uuid pk                                      |                                         |
+| rule_id                    | uuid, fk → group_rules.id, on delete cascade |                                         |
+| target_whatsapp_message_id | text                                         |                                         |
+| fired                      | boolean default false                        | flipped via atomic compare-and-set      |
+| fired_at                   | timestamptz nullable                         |                                         |
+| created_at / updated_at    | timestamptz                                  |                                         |
+| **unique**                 |                                              | `(rule_id, target_whatsapp_message_id)` |
+
+### `rule_match_responders`
+
+| column              | type                                          | notes                                                                   |
+| ------------------- | --------------------------------------------- | ----------------------------------------------------------------------- |
+| rule_match_id       | uuid, fk → rule_matches.id, on delete cascade | part of pk                                                              |
+| sender_jid          | text                                          | part of pk — **this composite PK is what enforces "N distinct people"** |
+| whatsapp_message_id | text                                          |                                                                         |
+| responded_at        | timestamptz                                   |                                                                         |
+
+### `rule_cooldowns`
+
+| column        | type                                            | notes |
+| ------------- | ----------------------------------------------- | ----- |
+| rule_id       | uuid pk, fk → group_rules.id, on delete cascade |       |
+| last_fired_at | timestamptz                                     |       |
+
+### `bot_actions`
+
+What the action engine actually did (or skipped) and why.
+
+| column                          | type                                  | notes                                          |
+| ------------------------------- | ------------------------------------- | ---------------------------------------------- |
+| id                              | uuid pk                               |                                                |
+| account_id / group_id / rule_id | uuid nullable, fk, on delete set null |                                                |
+| trigger_whatsapp_message_id     | text nullable                         |                                                |
+| action_type                     | text                                  | `SEND_MESSAGE` \| `LOG_ONLY` \| `NOTIFY_OWNER` |
+| status                          | text                                  | `success` \| `failed` \| `skipped`             |
+| detail                          | jsonb nullable                        | e.g. cooldown remaining seconds, send error    |
+| created_at                      | timestamptz                           | indexed with group_id                          |
+
+### `whatsapp_audit_logs`
+
+General activity feed for the dashboard's Activity page — distinct from
+`bot_actions` (specifically "what the bot did"). Named with a `whatsapp_`
+prefix rather than the more obvious `audit_logs` because this Supabase
+project already has an unrelated, pre-existing `audit_logs` table (not
+part of this project — discovered when the first migration attempt
+collided with it) — see docs/DECISIONS.md ADR-012.
+
+| column                | type                                  | notes                                                          |
+| --------------------- | ------------------------------------- | -------------------------------------------------------------- |
+| id                    | uuid pk                               |                                                                |
+| account_id / group_id | uuid nullable, fk, on delete set null |                                                                |
+| actor                 | text default 'system'                 | `'system'` or `'owner'` (dashboard config changes)             |
+| event_type            | text                                  | e.g. `rule.threshold_progress`, `rule.fired`, `config.changed` |
+| detail                | jsonb nullable                        | never credentials/keys/raw payloads — see docs/SECURITY.md     |
+| created_at            | timestamptz                           | indexed, and indexed with group_id                             |
+
 ## Design principles
 
 - **UUID primary keys** (`gen_random_uuid()`) everywhere except natural
@@ -97,11 +273,17 @@ requests keys as `get(category, ids[])`) and account-removal cleanup.
   server-side only — RLS doesn't gate that key, so policies are not a
   substitute for keeping the service key off any client surface.
 
-## Minimum viable schema (target for Phase 5+)
+## Minimum viable schema (target for Phase 6+)
 
-This is the planned schema for group configuration, rules, moderation, and
-AI usage — documented here for continuity. **Not created yet**; Phase 3
-only implemented the WhatsApp account/auth-state tables documented above.
+This is the planned schema for moderation, AI usage accounting, and
+owner/admin identity beyond the `OWNER_WHATSAPP_NUMBERS` env var —
+documented here for continuity. **Not created yet.** The `groups`,
+`group_settings`, `group_rules`, `messages`, `bot_actions`, and
+`audit_logs` sketches immediately below are **superseded** by the real
+Phase 4+5 schema documented above (`whatsapp_groups`, `group_settings`,
+`group_rules`, `whatsapp_messages`, `bot_actions`, `whatsapp_audit_logs`)
+— left here only as a historical record of the original design sketch,
+not as a build target.
 
 ### `admins`
 
@@ -280,8 +462,11 @@ Documented so they aren't forgotten, not because they're needed yet:
 - `ai_conversations` — only needed once a feature requires multi-turn AI
   context rather than single-shot classification/generation calls.
 
-## Open questions for Phase 5+
+## Open questions for Phase 6+
 
-- Exact `jsonb` shape for `group_rules.config` per trigger type (needs at
-  least the `response_threshold` shape worked out for the 5-person rule
-  example before Phase 5).
+- ~~Exact `jsonb` shape for `group_rules.config` per trigger type~~ —
+  **resolved in Phase 5**: `response_threshold`'s shape is
+  `{targetMessageMatch, qualify: {mode, phrases}, threshold, action,
+cooldownSeconds}`, strictly validated by `src/rules/ruleConfig.ts`
+  (zod). Future trigger types add their own schema to the same file's
+  discriminated union.

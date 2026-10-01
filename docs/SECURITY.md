@@ -55,27 +55,48 @@ apply when that phase is built:
 - The AI's output is consumed by the rule engine as data (e.g. "is this
   positive: yes/no"), not as a plan the bot blindly executes.
 
-## Idempotent, validated event processing
+## Idempotent, validated event processing (implemented — Phase 4+5)
 
-- Every WhatsApp event is deduplicated on its stable identifier before
-  storage or action (see `docs/ARCHITECTURE.md` and `docs/DATABASE.md`).
-  This also protects against a malicious or buggy redelivery being used to
-  trigger an action repeatedly (e.g. spamming the 5-person rule's action).
-- Any future inbound webhook (e.g. a dashboard API, Phase 12) must validate
-  its payload shape and, where applicable, an authentication signature,
-  before acting on it.
+- Every WhatsApp event is deduplicated on its stable identifier
+  (`whatsapp_processed_events`, PK `(account_id, chat_jid,
+whatsapp_message_id)`) before storage or rule evaluation — see
+  `src/whatsapp/events/eventPipeline.ts` and docs/ARCHITECTURE.md's
+  "Idempotency" section. This is what protects against a redelivered
+  WhatsApp event triggering an action twice.
+- A rule's action fires at most once per target message, enforced by a
+  separate atomic compare-and-set on `rule_matches.fired` (not the same
+  mechanism as event dedup — see docs/DECISIONS.md ADR-012 for why they're
+  deliberately two different guarantees).
+- Rule `config` (the JSON a rule's trigger/conditions/action are defined
+  by) is strictly validated against a zod schema keyed on `trigger_type`
+  — `src/rules/ruleConfig.ts` — on every write (`RulesRepository.create`/
+  `.update`) and every read before execution (`RulesRepository`'s
+  row-to-object mapping re-validates, not just on write). An invalid or
+  unrecognized `trigger_type` is a rejected write (`400` from
+  `src/web/groupRoutes.ts`) or a loud warning + skip at evaluation time
+  (`src/rules/ruleEngine.ts`) — never silently-coerced, never executed as
+  arbitrary code. There is no `eval`, dynamic `Function()` construction, or
+  template-interpolated SQL anywhere in the rule engine or action engine.
 
-## Dashboard / API authentication (Phase 12, not yet built)
+## Dashboard / API authentication (implemented — Phase 4+5)
 
-Reserved requirements for when the dashboard API exists:
+`src/web/groupRoutes.ts` (`/api/groups/**`) and `src/web/activityRoutes.ts`
+(`/api/activity`) sit behind the exact same `attachSession` /
+`requireAuth` / `requireCsrf` middleware as the Phase 2B account API — see
+"Web dashboard authentication" below. No unauthenticated endpoint can read
+or mutate group configuration, rules, or activity history; every mutating
+route (`PATCH .../settings`, `POST/PATCH/DELETE .../rules/**`) requires the
+CSRF token. `src/web/groupRoutes.test.ts` and `src/web/activityRoutes.test.ts`
+assert this directly (401 unauthenticated, 403 missing/wrong CSRF token).
 
-- Authenticated access only — no unauthenticated endpoint may read or
-  mutate group configuration, rules, or message history.
-- Rate limiting on any endpoint that can trigger a WhatsApp send or an AI
-  call, to bound cost and abuse.
-- Supabase RLS policies enabled once the dashboard introduces non-service
-  credentials, scoped so a dashboard user can only see data for groups
-  they're authorized for.
+Reserved for later: rate limiting specifically on the `SEND_MESSAGE`/
+`NOTIFY_OWNER` action path once AI-driven or higher-frequency rule types
+exist (Phase 6+); today's one implemented trigger type (`response_threshold`)
+is inherently rate-limited by its own distinct-responder threshold and
+optional cooldown. Supabase RLS stays default-deny (no `anon`/
+`authenticated` policies, per docs/DATABASE.md) — the dashboard never talks
+to Supabase directly, only through this authenticated Express API using the
+service role key server-side.
 
 ## AI usage limits
 
@@ -97,14 +118,27 @@ Requirements for when that phase is built:
 - Logging must record _that_ media was captured (for audit) without logging
   the media content itself.
 
-## Audit logging
+## Audit logging (implemented — Phase 4+5)
 
-- `bot_actions` records every automated action (what fired, which rule,
-  which message/event caused it, outcome).
-- `audit_logs` records configuration changes and command execution (who,
-  what, when).
-- Neither table is optional scaffolding — they exist from Phase 3 onward so
-  the owner can always answer "why did the bot do that?"
+- `bot_actions` records every action the action engine executed or
+  skipped — which rule, which target message, the action type
+  (`SEND_MESSAGE`/`LOG_ONLY`/`NOTIFY_OWNER`), outcome (`success`/`failed`/
+  `skipped`), and a `detail` field (e.g. a cooldown's remaining seconds, or
+  a send failure's error message — never message content or recipient
+  credentials). Written by `src/rules/ruleEngine.ts` via
+  `AuditRepository.recordAction()`.
+- `whatsapp_audit_logs` records the broader activity feed the dashboard's Activity
+  page reads: rule threshold progress, rule fired, and owner-made
+  configuration changes (`actor: 'owner'`, written by
+  `src/web/groupRoutes.ts` on every settings/rule change). `detail` is
+  always a small, specific object (e.g. `{ruleId, ruleName, distinctResponders,
+threshold}`) — never the full matched message text, never credentials or
+  keys. `src/db/auditRepository.test.ts` and `src/web/activityRoutes.test.ts`
+  assert the response never contains `ciphertext`/`encryptionKey`/
+  `auth_tag`/`service_role`.
+- Neither table is optional scaffolding — both exist from Phase 4+5 onward
+  so the owner can always answer "why did the bot do that?" (or "why
+  didn't it," for a cooldown-skipped or no-owner-configured skip).
 
 ## WhatsApp authentication material (Phase 2)
 
@@ -293,7 +327,7 @@ enforced:
 - A pairing code is likewise scoped to `PairingSnapshot` only, cleared on
   the same lifecycle events as the QR.
 
-## What's actually enforced in code today (Phases 1-3)
+## What's actually enforced in code today (Phases 1-5)
 
 - Config loading never logs secret values (`src/config/config.ts`,
   `src/services/logger.ts`).
@@ -316,6 +350,30 @@ enforced:
   see "Durable WhatsApp auth-state persistence" above, covered by automated
   tests including a process-restart simulation
   (`src/whatsapp/auth/supabaseAuthStateProvider.test.ts`).
-- No message content is read, stored, or acted upon yet — Phases 2B-3 only
-  add connection/account management and durable session persistence;
-  `handlers/`, `rules/`, `commands/`, and `moderation/` still don't exist.
+- A newly discovered WhatsApp group cannot be automating itself: the only
+  code path that creates a `group_settings` row
+  (`GroupsRepository.ensureSettings()`) always writes every toggle `false`
+  — verified by `src/whatsapp/groups/groupDiscovery.test.ts` and
+  `src/db/groupsRepository.test.ts`.
+- The rule engine fires a configured action at most once per matching
+  target message (atomic compare-and-set, not a race-prone read-then-write)
+  and respects a configured cooldown — verified by
+  `src/rules/ruleEngine.test.ts`, including a process-restart simulation
+  proving this doesn't depend on in-memory state.
+- Rule `config` is never executed as unvalidated JSON — every write and
+  read goes through a strict zod schema (`src/rules/ruleConfig.ts`);
+  `src/db/rulesRepository.test.ts` asserts that malformed configs
+  (missing fields, wrong types, unsupported action types) are rejected,
+  not coerced.
+- `/api/groups/**` and `/api/activity` require the same authenticated
+  owner session and CSRF token as every other mutating dashboard route —
+  verified by `src/web/groupRoutes.test.ts` and
+  `src/web/activityRoutes.test.ts` (401 unauthenticated, 403 missing/wrong
+  CSRF, and cross-group isolation: changing one group's settings or rules
+  never affects another group's).
+- No private-chat (DM) automation exists — Phase 4+5's event pipeline
+  normalizes and dedup-gates private messages the same as group messages,
+  but never stores them or evaluates any rule against them (see "Private-
+  chat automation is opt-in" above). `commands/` and `moderation/` still
+  don't exist, and no AI call is made anywhere in the rule or action
+  engine — see "Why AI is not in the hot path" in docs/ARCHITECTURE.md.

@@ -1,6 +1,9 @@
 import type {
   AuthenticationState,
   ConnectionState as BaileysConnectionState,
+  GroupMetadata,
+  MessageUpsertType,
+  WAMessage,
   WASocket,
 } from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
@@ -20,6 +23,12 @@ export type SocketFactory = (params: {
   logger: Logger;
 }) => Promise<WASocket>;
 
+/** A WhatsApp group known to the connected account — JID + current display name. */
+export interface DiscoveredGroup {
+  jid: string;
+  subject: string;
+}
+
 export interface ConnectionManagerOptions {
   authProvider: AuthStateProvider;
   logger: Logger;
@@ -38,14 +47,33 @@ export interface ConnectionManagerOptions {
    * never cut short. Defaults to 45s.
    */
   inactivityWatchdogMs?: number;
+  /**
+   * Fired for every raw incoming `WAMessage` from Baileys' `messages.upsert`
+   * (Phase 4). This manager does no normalization or interpretation of
+   * content itself — see src/whatsapp/events/eventPipeline.ts for that.
+   * `type` is Baileys' own 'notify' (live) vs 'append' (offline backlog)
+   * distinction; callers decide what to do with each.
+   */
+  onMessage?: (message: WAMessage, type: MessageUpsertType) => void;
+  /**
+   * Fired with the full list of groups the account is known to belong to:
+   * once after every successful connect (via `groupFetchAllParticipating()`
+   * — the standard Baileys discovery call for "all my groups", not
+   * invented) and again whenever Baileys reports new/changed groups
+   * (`groups.upsert`/`groups.update`). See src/whatsapp/groups/groupDiscovery.ts.
+   */
+  onGroupsDiscovered?: (groups: DiscoveredGroup[]) => void;
 }
 
 /**
  * Owns the WhatsApp connection lifecycle: creating the socket, applying
  * auth state, reconnecting on transient failures with capped backoff,
  * distinguishing explicit/terminal logout from temporary disconnects, and
- * preventing duplicate sockets/listeners. Does not process any message
- * content — that's deliberately out of scope until later phases.
+ * preventing duplicate sockets/listeners. Message content interpretation
+ * and group-settings/rule logic live elsewhere (src/whatsapp/events/,
+ * src/whatsapp/groups/, src/rules/) — this class only fans out the raw
+ * Baileys events via `onMessage`/`onGroupsDiscovered` and exposes
+ * `sendTextMessage()` for the action engine to use.
  */
 export class WhatsAppConnectionManager {
   private readonly authProvider: AuthStateProvider;
@@ -53,6 +81,8 @@ export class WhatsAppConnectionManager {
   private readonly reconnectConfig: { baseMs: number; maxMs: number };
   private readonly socketFactory: SocketFactory;
   private readonly inactivityWatchdogMs: number;
+  private readonly onMessage: ConnectionManagerOptions['onMessage'];
+  private readonly onGroupsDiscovered: ConnectionManagerOptions['onGroupsDiscovered'];
 
   private socket: WASocket | null = null;
   private state: WhatsAppConnectionState = 'disabled';
@@ -78,6 +108,8 @@ export class WhatsAppConnectionManager {
     this.reconnectConfig = options.reconnect;
     this.socketFactory = options.createSocket ?? createWhatsAppSocket;
     this.inactivityWatchdogMs = options.inactivityWatchdogMs ?? 45_000;
+    this.onMessage = options.onMessage;
+    this.onGroupsDiscovered = options.onGroupsDiscovered;
   }
 
   getStatus(): WhatsAppStatus {
@@ -206,6 +238,60 @@ export class WhatsAppConnectionManager {
     socket.ev.on('connection.update', (update) => {
       void this.handleConnectionUpdate(update);
     });
+
+    socket.ev.on('messages.upsert', ({ messages, type }) => {
+      if (!this.onMessage) return;
+      for (const message of messages) {
+        try {
+          this.onMessage(message, type);
+        } catch (err) {
+          this.logger.error({ err }, 'onMessage handler threw');
+        }
+      }
+    });
+
+    socket.ev.on('groups.upsert', (groups) => {
+      this.emitDiscoveredGroups(groups);
+    });
+
+    socket.ev.on('groups.update', (partials) => {
+      // Partial updates (e.g. a rename) still carry id+subject when that's
+      // what changed; entries missing either are skipped rather than
+      // guessed at.
+      this.emitDiscoveredGroups(partials);
+    });
+  }
+
+  private emitDiscoveredGroups(groups: Array<Partial<GroupMetadata>>): void {
+    if (!this.onGroupsDiscovered) return;
+    const discovered: DiscoveredGroup[] = groups
+      .filter((g): g is Partial<GroupMetadata> & { id: string; subject: string } =>
+        Boolean(g.id && typeof g.subject === 'string'),
+      )
+      .map((g) => ({ jid: g.id, subject: g.subject }));
+    if (discovered.length > 0) {
+      this.onGroupsDiscovered(discovered);
+    }
+  }
+
+  /**
+   * Full group discovery on (re)connect, via Baileys' own
+   * `groupFetchAllParticipating()` — the standard call for "every group
+   * this account currently participates in," not something hand-rolled.
+   * Best-effort: a failure here must never affect the live connection it
+   * runs alongside.
+   */
+  private discoverGroups(socket: WASocket): void {
+    if (!this.onGroupsDiscovered) return;
+    socket
+      .groupFetchAllParticipating()
+      .then((groups) => {
+        const discovered = Object.values(groups).map((g) => ({ jid: g.id, subject: g.subject }));
+        this.onGroupsDiscovered?.(discovered);
+      })
+      .catch((err: unknown) => {
+        this.logger.warn({ err }, 'Failed to fetch participating WhatsApp groups');
+      });
   }
 
   private async persistCreds(): Promise<void> {
@@ -245,6 +331,9 @@ export class WhatsAppConnectionManager {
       this.lastConnectedAt = new Date().toISOString();
       this.setState('connected', isNewLogin ? 'Newly linked device' : undefined);
       this.logger.info({ isNewLogin: Boolean(isNewLogin) }, 'WhatsApp connection established');
+      if (this.socket) {
+        this.discoverGroups(this.socket);
+      }
     }
 
     if (connection === 'close') {
@@ -359,6 +448,23 @@ export class WhatsAppConnectionManager {
     this.detail = detail;
     this.updatedAt = new Date().toISOString();
     this.emitUpdate();
+  }
+
+  /**
+   * Sends a plain text message through this account's live connection —
+   * the one path the action engine (src/rules/actionEngine.ts) uses for
+   * `SEND_MESSAGE`/`NOTIFY_OWNER`. Only callable while actually connected;
+   * throws otherwise rather than queuing or silently dropping the send, so
+   * a failed send is always visible to the caller (and from there, to the
+   * audit log). Not reachable from any HTTP endpoint directly — only from
+   * rule evaluation, which itself only runs for dashboard-configured,
+   * owner-authenticated rules.
+   */
+  async sendTextMessage(jid: string, text: string): Promise<void> {
+    if (!this.socket || this.state !== 'connected') {
+      throw new Error('Cannot send a WhatsApp message: this account is not currently connected');
+    }
+    await this.socket.sendMessage(jid, { text });
   }
 
   /**
