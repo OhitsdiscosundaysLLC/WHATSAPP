@@ -440,6 +440,140 @@ describe('group routes — extended settings fields (Phase 6+)', () => {
       .expect(200);
     expect(res.body.settings.dryRunEnabled).toBe(true);
   });
+
+  it('accepts and persists VIP/Never Auto Reply/Never Moderate/owner notes', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('tags@g.us', 'Tags Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        vip: true,
+        neverAutoReply: true,
+        neverModerate: true,
+        ownerNotes: 'Handle with care — long-time client.',
+      })
+      .expect(200);
+    expect(res.body.settings).toMatchObject({
+      vip: true,
+      neverAutoReply: true,
+      neverModerate: true,
+      ownerNotes: 'Handle with care — long-time client.',
+    });
+  });
+
+  it('accepts and persists quiet hours configuration', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('quiet@g.us', 'Quiet Hours Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        quietHoursEnabled: true,
+        quietHoursTimezone: 'America/New_York',
+        quietHoursDays: [1, 2, 3, 4, 5],
+        quietHoursStartMinutes: 17 * 60,
+        quietHoursEndMinutes: 9 * 60,
+      })
+      .expect(200);
+    expect(res.body.settings).toMatchObject({
+      quietHoursEnabled: true,
+      quietHoursTimezone: 'America/New_York',
+      quietHoursDays: [1, 2, 3, 4, 5],
+      quietHoursStartMinutes: 1020,
+      quietHoursEndMinutes: 540,
+    });
+  });
+
+  it('filters out-of-range values from quietHoursDays rather than storing them', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('quiet-filter@g.us', 'Quiet Filter Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ quietHoursDays: [1, 2, 99, -1, 'nope'] })
+      .expect(200);
+    expect(res.body.settings.quietHoursDays).toEqual([1, 2]);
+  });
+
+  it('rejects an invalid deletedMessageAlertMode (ignored, not applied)', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('alert-mode@g.us', 'Alert Mode Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ deletedMessageAlertMode: 'not_a_real_mode' })
+      .expect(200);
+    expect(res.body.settings.deletedMessageAlertMode).toBe('archive_only');
+  });
+
+  it('accepts a valid deletedMessageAlertMode', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('alert-mode-valid@g.us', 'Alert Mode Valid Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ deletedMessageAlertMode: 'both' })
+      .expect(200);
+    expect(res.body.settings.deletedMessageAlertMode).toBe('both');
+  });
+});
+
+describe('group routes — Human Takeover', () => {
+  it('rejects without a CSRF token', async () => {
+    const { cookie } = await login();
+    const groupId = await seedGroup('takeover-csrf@g.us', 'Takeover CSRF Group');
+    await request(app)
+      .post(`/api/groups/${groupId}/human-takeover`)
+      .set('Cookie', cookie)
+      .send({ durationMinutes: 30 })
+      .expect(403);
+  });
+
+  it('rejects a request with neither durationMinutes nor resume', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('takeover-invalid@g.us', 'Takeover Invalid Group');
+    await request(app)
+      .post(`/api/groups/${groupId}/human-takeover`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({})
+      .expect(400);
+  });
+
+  it('starts a takeover for the given duration, then resumes automation early', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('takeover@g.us', 'Takeover Group');
+
+    const startRes = await request(app)
+      .post(`/api/groups/${groupId}/human-takeover`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ durationMinutes: 30 })
+      .expect(200);
+    expect(startRes.body.settings.humanTakeoverUntil).toBeTruthy();
+    expect(new Date(startRes.body.settings.humanTakeoverUntil).getTime()).toBeGreaterThan(
+      Date.now(),
+    );
+
+    const resumeRes = await request(app)
+      .post(`/api/groups/${groupId}/human-takeover`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ resume: true })
+      .expect(200);
+    expect(resumeRes.body.settings.humanTakeoverUntil).toBeFalsy();
+  });
 });
 
 describe('group routes — deleted messages and media archive', () => {

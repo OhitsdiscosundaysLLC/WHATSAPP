@@ -220,6 +220,53 @@ describe('RuleEngine — private (contact) auto_reply', () => {
     expect(sender.sentTo).toHaveLength(1);
   });
 
+  it('neverAutoReply overrides a matching, otherwise-firing private auto_reply rule unconditionally', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildEngine(fake, sender);
+    await deps.rulesRepository.createForContact({
+      contactId: 'contact-row-1',
+      name: 'Hours reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluatePrivate(
+      privateEvent(),
+      'contact-row-1',
+      settingsWith({ privateAutoReplyEnabled: true, neverAutoReply: true }),
+    );
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('Human Takeover suppresses a matching private auto_reply rule while active', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildEngine(fake, sender);
+    await deps.rulesRepository.createForContact({
+      contactId: 'contact-row-1',
+      name: 'Hours reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+    const takeoverUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    await engine.evaluatePrivate(
+      privateEvent(),
+      'contact-row-1',
+      settingsWith({ privateAutoReplyEnabled: true, humanTakeoverUntil: takeoverUntil }),
+    );
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
   it('a rule for contact A never fires when evaluating contact B (isolation)', async () => {
     const fake = new FakeSupabaseClient();
     const sender = fakeSender();

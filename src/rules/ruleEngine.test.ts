@@ -914,6 +914,116 @@ describe('RuleEngine — auto_reply', () => {
     expect(sender.sentTo).toHaveLength(0);
   });
 
+  it('neverAutoReply overrides a matching, otherwise-firing auto_reply rule unconditionally', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, neverAutoReply: true }),
+    );
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('Human Takeover suppresses a matching auto_reply rule while active, and is audited', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+    const takeoverUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, humanTakeoverUntil: takeoverUntil }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({ reason: 'human_takeover_active' });
+  });
+
+  it('an expired Human Takeover no longer suppresses auto_reply', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+    const expiredTakeover = new Date(Date.now() - 60 * 1000).toISOString();
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, humanTakeoverUntil: expiredTakeover }),
+    );
+
+    expect(sender.sentTo).toEqual([{ jid: 'group@g.us', text: 'We are open 9-5.' }]);
+  });
+
+  it('Quiet Hours suppresses a matching auto_reply rule while inside the window, and is audited', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+    // A window covering every minute of every day — deterministically "always on" for this test.
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({
+        autoReplyEnabled: true,
+        quietHoursEnabled: true,
+        quietHoursTimezone: 'UTC',
+        quietHoursDays: [],
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 1439,
+      }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({ reason: 'quiet_hours' });
+  });
+
   it('Dry Run: a qualifying message never actually sends, but is logged as "would have"', async () => {
     const fake = new FakeSupabaseClient();
     const sender = fakeSender();
@@ -1017,6 +1127,34 @@ describe('RuleEngine — moderation', () => {
 
     await engine.evaluate(moderationEvent(), 'group-1', settingsWith({ moderationEnabled: true }));
     expect(sender.sentTo).toEqual([{ jid: 'group@g.us', text: 'Please watch your language.' }]);
+  });
+
+  it('neverModerate overrides a matching, otherwise-firing moderation rule unconditionally', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'WARN', message: 'Please watch your language.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      moderationEvent(),
+      'group-1',
+      settingsWith({ moderationEnabled: true, neverModerate: true }),
+    );
+    expect(sender.sentTo).toHaveLength(0);
   });
 
   it('DELETE_MESSAGE is never executed unless moderationDestructiveActionsEnabled is explicitly true', async () => {

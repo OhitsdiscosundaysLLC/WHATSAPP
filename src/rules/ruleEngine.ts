@@ -13,6 +13,7 @@ import type { NormalizedMessageEvent } from '../whatsapp/events/messageNormalize
 import { executeAction, type MessageSender } from './actionEngine';
 import { classifyAutoReply } from './classifiers/autoReplyClassifier';
 import type { ResponseClassifier } from './classifiers/responseClassifier';
+import { isWithinQuietHours } from './quietHours';
 import {
   executeModerationAction,
   type ModerationCapabilities,
@@ -299,6 +300,7 @@ export class RuleEngine {
     settings: GroupSettings,
   ): Promise<void> {
     if (!settings.autoReplyEnabled) return;
+    if (settings.neverAutoReply) return; // owner override — wins over every auto_reply rule unconditionally
     if (!event.groupJid) return;
 
     const config = rule.config as AutoReplyConfig;
@@ -349,6 +351,35 @@ export class RuleEngine {
       classifyCtx,
     );
     if (!qualifies) return;
+
+    if (
+      settings.humanTakeoverUntil &&
+      new Date(settings.humanTakeoverUntil).getTime() > Date.now()
+    ) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'human_takeover_active', until: settings.humanTakeoverUntil },
+      });
+      return;
+    }
+
+    if (isWithinQuietHours(new Date(), settings)) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'quiet_hours' },
+      });
+      return;
+    }
 
     if (config.cooldownSeconds > 0) {
       const lastFiredAt = await this.deps.ruleStateRepository.getLastFiredAt(rule.id);
@@ -489,6 +520,7 @@ export class RuleEngine {
     settings: ContactSettings,
   ): Promise<void> {
     if (!settings.privateAutoReplyEnabled) return;
+    if (settings.neverAutoReply) return; // owner override — wins over every auto_reply rule unconditionally
 
     const config = rule.config as AutoReplyConfig;
     const contactJid = event.chatJid;
@@ -539,6 +571,37 @@ export class RuleEngine {
       classifyCtx,
     );
     if (!qualifies) return;
+
+    if (
+      settings.humanTakeoverUntil &&
+      new Date(settings.humanTakeoverUntil).getTime() > Date.now()
+    ) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId: undefined,
+        contactId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'human_takeover_active', until: settings.humanTakeoverUntil },
+      });
+      return;
+    }
+
+    if (isWithinQuietHours(new Date(), settings)) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId: undefined,
+        contactId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'quiet_hours' },
+      });
+      return;
+    }
 
     if (config.cooldownSeconds > 0) {
       const lastFiredAt = await this.deps.ruleStateRepository.getLastFiredAt(rule.id);
@@ -685,6 +748,7 @@ export class RuleEngine {
     settings: GroupSettings,
   ): Promise<void> {
     if (!settings.moderationEnabled) return;
+    if (settings.neverModerate) return; // owner override — wins over every moderation rule unconditionally
     if (!event.groupJid) return;
 
     const config = rule.config as ModerationConfig;

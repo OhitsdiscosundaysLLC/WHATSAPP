@@ -403,14 +403,14 @@ rule evaluation); `allowlisted` is deliberately informational-only — a
 second behavioral gate alongside per-contact toggles would itself be a dead
 control.
 
-| column (contact_settings)                  | notes                                                               |
-| ------------------------------------------- | -------------------------------------------------------------------- |
-| private_monitoring_enabled                  | required to store messages / archive deletions for this contact      |
+| column (contact_settings)                                                                                                    | notes                                                                       |
+| ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| private_monitoring_enabled                                                                                                   | required to store messages / archive deletions for this contact             |
 | private_ai_enabled / private_auto_reply_enabled / private_ai_auto_reply_enabled / private_ai_semantic_classification_enabled | mirrors the group four-gate AI permission pattern (src/rules/ruleEngine.ts) |
-| private_deleted_message_archive_enabled      |                                                                        |
-| dry_run_enabled                             | see Phase 7's Dry Run entry below                                     |
-| custom_instructions / custom_ai_instructions | per-contact prompt context                                           |
-| ai_cooldown_seconds / ai_max_responses_per_hour / deleted_message_retention_days | same semantics as the group equivalents |
+| private_deleted_message_archive_enabled                                                                                      |                                                                             |
+| dry_run_enabled                                                                                                              | see Phase 7's Dry Run entry below                                           |
+| custom_instructions / custom_ai_instructions                                                                                 | per-contact prompt context                                                  |
+| ai_cooldown_seconds / ai_max_responses_per_hour / deleted_message_retention_days                                             | same semantics as the group equivalents                                     |
 
 ### `whatsapp_admins`
 
@@ -421,7 +421,7 @@ has no DB-backed equivalent and never can: the owner identity is
 structurally prevented from being written by any code path, so there is no
 privilege-escalation path through the dashboard. See docs/SECURITY.md.
 
-| column     | type                                  | notes                  |
+| column     | type                                  | notes                   |
 | ---------- | ------------------------------------- | ----------------------- |
 | id         | uuid pk                               |                         |
 | account_id | uuid, fk → whatsapp_accounts, cascade |                         |
@@ -463,23 +463,24 @@ Activity page reads (every rule evaluation, every message received). Only
 ever populated from structured data already known at the call site, never
 AI-generated guessing about what happened. See `src/db/ownerInboxRepository.ts`.
 
-| column     | type                                   | notes                                                                                                 |
-| ---------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| id         | uuid pk                                |                                                                                                        |
-| account_id | uuid, fk → whatsapp_accounts, cascade  |                                                                                                        |
-| group_id   | uuid nullable, fk, on delete cascade   |                                                                                                        |
-| contact_id | uuid nullable, fk, on delete cascade   |                                                                                                        |
-| category   | text                                   | `deleted_message` \| `missed_call` \| `moderation` \| `ai_failure` \| `disconnected` \| `automation_failure` \| `rule_fired` |
-| title      | text                                   | the human-readable headline shown on the card                                                          |
-| detail     | jsonb nullable                         |                                                                                                        |
-| read       | boolean default false                  |                                                                                                        |
-| dismissed  | boolean default false                  |                                                                                                        |
-| created_at | timestamptz                            | indexed, newest first                                                                                   |
+| column     | type                                  | notes                                                                                                                        |
+| ---------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| id         | uuid pk                               |                                                                                                                              |
+| account_id | uuid, fk → whatsapp_accounts, cascade |                                                                                                                              |
+| group_id   | uuid nullable, fk, on delete cascade  |                                                                                                                              |
+| contact_id | uuid nullable, fk, on delete cascade  |                                                                                                                              |
+| category   | text                                  | `deleted_message` \| `missed_call` \| `moderation` \| `ai_failure` \| `disconnected` \| `automation_failure` \| `rule_fired` |
+| title      | text                                  | the human-readable headline shown on the card                                                                                |
+| detail     | jsonb nullable                        |                                                                                                                              |
+| read       | boolean default false                 |                                                                                                                              |
+| dismissed  | boolean default false                 |                                                                                                                              |
+| created_at | timestamptz                           | indexed, newest first                                                                                                        |
 
 Wired at five sites: deleted messages (group + private), incoming call
 offers, a moderation action firing, and AI reply generation failures (group
-+ private). Deliberately **not** wired for new-group-discovery or a generic
-automation-failure catch-all in this pass.
+
+- private). Deliberately **not** wired for new-group-discovery or a generic
+  automation-failure catch-all in this pass.
 
 ## Design principles
 

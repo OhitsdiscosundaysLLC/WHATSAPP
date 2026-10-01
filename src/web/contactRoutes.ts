@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { AuditRepository } from '../db/auditRepository';
 import { ContactsRepository, type ContactSettingsPatch } from '../db/contactsRepository';
+import { DELETED_MESSAGE_ALERT_MODES, type DeletedMessageAlertMode } from '../db/groupsRepository';
 import { MessagesRepository } from '../db/messagesRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
@@ -179,6 +180,12 @@ export function createContactRouter(): Router {
       'privateAiSemanticClassificationEnabled',
       'privateDeletedMessageArchiveEnabled',
       'dryRunEnabled',
+      'vip',
+      'neverAutoReply',
+      'neverModerate',
+      'quietHoursEnabled',
+      'approvalRequired',
+      'mediaArchiveEnabled',
     ] as const) {
       if (typeof body?.[key] === 'boolean') patch[key] = body[key];
     }
@@ -200,6 +207,27 @@ export function createContactRouter(): Router {
     ) {
       patch.deletedMessageRetentionDays = body.deletedMessageRetentionDays ?? undefined;
     }
+    if (typeof body?.ownerNotes === 'string') patch.ownerNotes = body.ownerNotes;
+    if (typeof body?.quietHoursTimezone === 'string' || body?.quietHoursTimezone === null) {
+      patch.quietHoursTimezone = body.quietHoursTimezone ?? undefined;
+    }
+    if (Array.isArray(body?.quietHoursDays)) {
+      patch.quietHoursDays = body.quietHoursDays.filter(
+        (d: unknown): d is number => typeof d === 'number' && d >= 0 && d <= 6,
+      );
+    }
+    if (typeof body?.quietHoursStartMinutes === 'number' || body?.quietHoursStartMinutes === null) {
+      patch.quietHoursStartMinutes = body.quietHoursStartMinutes ?? undefined;
+    }
+    if (typeof body?.quietHoursEndMinutes === 'number' || body?.quietHoursEndMinutes === null) {
+      patch.quietHoursEndMinutes = body.quietHoursEndMinutes ?? undefined;
+    }
+    if (
+      typeof body?.deletedMessageAlertMode === 'string' &&
+      DELETED_MESSAGE_ALERT_MODES.includes(body.deletedMessageAlertMode as never)
+    ) {
+      patch.deletedMessageAlertMode = body.deletedMessageAlertMode as DeletedMessageAlertMode;
+    }
 
     const settings = await contactsRepository.updateSettings(id, patch);
 
@@ -211,6 +239,49 @@ export function createContactRouter(): Router {
       actor: 'owner',
       eventType: 'config.changed',
       detail: { patch, scope: 'private' },
+    });
+
+    res.status(200).json({ settings });
+  });
+
+  // Human Takeover — see groupRoutes.ts's equivalent for why this is a
+  // friendly action endpoint rather than making the dashboard compute an
+  // ISO timestamp from a duration itself.
+  router.post('/:id/human-takeover', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const contactsRepository = new ContactsRepository(supabase);
+    const contact = await contactsRepository.getById(id);
+    if (!contact) {
+      res.status(404).json({ error: 'contact_not_found' });
+      return;
+    }
+
+    const body = req.body as { durationMinutes?: unknown; resume?: unknown } | undefined;
+    let humanTakeoverUntil: string | undefined;
+    if (body?.resume === true) {
+      humanTakeoverUntil = undefined;
+    } else if (typeof body?.durationMinutes === 'number' && body.durationMinutes > 0) {
+      humanTakeoverUntil = new Date(Date.now() + body.durationMinutes * 60_000).toISOString();
+    } else {
+      res.status(400).json({
+        error: 'invalid_request',
+        message: 'Provide a positive durationMinutes, or resume: true to end takeover early.',
+      });
+      return;
+    }
+
+    const settings = await contactsRepository.updateSettings(id, { humanTakeoverUntil });
+
+    const auditRepository = new AuditRepository(supabase);
+    await auditRepository.recordEvent({
+      accountId: contact.accountId,
+      groupId: undefined,
+      contactId: id,
+      actor: 'owner',
+      eventType: 'human_takeover.changed',
+      detail: { humanTakeoverUntil: humanTakeoverUntil ?? null },
     });
 
     res.status(200).json({ settings });

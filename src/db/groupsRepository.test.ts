@@ -72,6 +72,27 @@ describe('GroupsRepository', () => {
     expect(settings?.monitoringEnabled).toBe(true);
   });
 
+  it('can clear a nullable field back to "unlimited"/undefined, not just set it', async () => {
+    const { repo: r } = repo();
+    const g = await r.upsertDiscoveredGroup('acct-1', 'a@g.us', 'A');
+    await r.updateSettings(g.id, { aiMaxResponsesPerHour: 10 });
+    expect((await r.getSettings(g.id))?.aiMaxResponsesPerHour).toBe(10);
+
+    await r.updateSettings(g.id, { aiMaxResponsesPerHour: undefined });
+    expect((await r.getSettings(g.id))?.aiMaxResponsesPerHour).toBeUndefined();
+  });
+
+  it('can clear humanTakeoverUntil back to undefined (resume automation)', async () => {
+    const { repo: r } = repo();
+    const g = await r.upsertDiscoveredGroup('acct-1', 'a@g.us', 'A');
+    const until = new Date(Date.now() + 60_000).toISOString();
+    await r.updateSettings(g.id, { humanTakeoverUntil: until });
+    expect((await r.getSettings(g.id))?.humanTakeoverUntil).toBe(until);
+
+    await r.updateSettings(g.id, { humanTakeoverUntil: undefined });
+    expect((await r.getSettings(g.id))?.humanTakeoverUntil).toBeUndefined();
+  });
+
   it('getByJid looks up a group by its WhatsApp JID', async () => {
     const { repo: r } = repo();
     const created = await r.upsertDiscoveredGroup('acct-1', 'a@g.us', 'A');

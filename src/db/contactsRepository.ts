@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DeletedMessageAlertMode } from './groupsRepository';
 import { createChildLogger } from '../services/logger';
 
 const log = createChildLogger('db:contacts');
@@ -40,6 +41,22 @@ export interface ContactSettings {
   deletedMessageRetentionDays: number | undefined;
   /** When true, the rule engine evaluates real events normally but logs "would have done X" instead of executing any action. */
   dryRunEnabled: boolean;
+  /** Owner-facing label only — never read by any runtime gate (same reasoning as contacts.allowlisted). */
+  vip: boolean;
+  /** Overrides (suppresses) every auto_reply rule for this contact, regardless of the rule's own config. */
+  neverAutoReply: boolean;
+  /** Overrides (suppresses) every moderation rule for this contact — contacts have no moderation today, kept for symmetry/future use. */
+  neverModerate: boolean;
+  ownerNotes: string | undefined;
+  quietHoursEnabled: boolean;
+  quietHoursTimezone: string | undefined;
+  quietHoursDays: number[];
+  quietHoursStartMinutes: number | undefined;
+  quietHoursEndMinutes: number | undefined;
+  humanTakeoverUntil: string | undefined;
+  approvalRequired: boolean;
+  mediaArchiveEnabled: boolean;
+  deletedMessageAlertMode: DeletedMessageAlertMode;
   updatedAt: string;
 }
 
@@ -57,6 +74,19 @@ export const DEFAULT_CONTACT_SETTINGS: Omit<ContactSettings, 'contactId' | 'upda
   aiMaxResponsesPerHour: undefined,
   deletedMessageRetentionDays: undefined,
   dryRunEnabled: false,
+  vip: false,
+  neverAutoReply: false,
+  neverModerate: false,
+  ownerNotes: undefined,
+  quietHoursEnabled: false,
+  quietHoursTimezone: undefined,
+  quietHoursDays: [],
+  quietHoursStartMinutes: undefined,
+  quietHoursEndMinutes: undefined,
+  humanTakeoverUntil: undefined,
+  approvalRequired: false,
+  mediaArchiveEnabled: false,
+  deletedMessageAlertMode: 'archive_only',
 };
 
 export interface ContactSettingsPatch {
@@ -73,6 +103,19 @@ export interface ContactSettingsPatch {
   aiMaxResponsesPerHour?: number | undefined;
   deletedMessageRetentionDays?: number | undefined;
   dryRunEnabled?: boolean;
+  vip?: boolean;
+  neverAutoReply?: boolean;
+  neverModerate?: boolean;
+  ownerNotes?: string | undefined;
+  quietHoursEnabled?: boolean;
+  quietHoursTimezone?: string | undefined;
+  quietHoursDays?: number[];
+  quietHoursStartMinutes?: number | undefined;
+  quietHoursEndMinutes?: number | undefined;
+  humanTakeoverUntil?: string | undefined;
+  approvalRequired?: boolean;
+  mediaArchiveEnabled?: boolean;
+  deletedMessageAlertMode?: DeletedMessageAlertMode;
 }
 
 export interface ContactPatch {
@@ -107,6 +150,19 @@ interface ContactSettingsRow {
   ai_max_responses_per_hour: number | null;
   deleted_message_retention_days: number | null;
   dry_run_enabled: boolean;
+  vip: boolean;
+  never_auto_reply: boolean;
+  never_moderate: boolean;
+  owner_notes: string | null;
+  quiet_hours_enabled: boolean;
+  quiet_hours_timezone: string | null;
+  quiet_hours_days: number[];
+  quiet_hours_start_minutes: number | null;
+  quiet_hours_end_minutes: number | null;
+  human_takeover_until: string | null;
+  approval_required: boolean;
+  media_archive_enabled: boolean;
+  deleted_message_alert_mode: DeletedMessageAlertMode;
   updated_at: string;
 }
 
@@ -139,6 +195,19 @@ function fromSettingsRow(row: ContactSettingsRow): ContactSettings {
     aiMaxResponsesPerHour: row.ai_max_responses_per_hour ?? undefined,
     deletedMessageRetentionDays: row.deleted_message_retention_days ?? undefined,
     dryRunEnabled: row.dry_run_enabled,
+    vip: row.vip,
+    neverAutoReply: row.never_auto_reply,
+    neverModerate: row.never_moderate,
+    ownerNotes: row.owner_notes ?? undefined,
+    quietHoursEnabled: row.quiet_hours_enabled,
+    quietHoursTimezone: row.quiet_hours_timezone ?? undefined,
+    quietHoursDays: row.quiet_hours_days ?? [],
+    quietHoursStartMinutes: row.quiet_hours_start_minutes ?? undefined,
+    quietHoursEndMinutes: row.quiet_hours_end_minutes ?? undefined,
+    humanTakeoverUntil: row.human_takeover_until ?? undefined,
+    approvalRequired: row.approval_required,
+    mediaArchiveEnabled: row.media_archive_enabled,
+    deletedMessageAlertMode: row.deleted_message_alert_mode,
     updatedAt: row.updated_at,
   };
 }
@@ -171,13 +240,37 @@ function toSettingsPatchRow(patch: ContactSettingsPatch): Record<string, unknown
     row.default_cooldown_seconds = patch.defaultCooldownSeconds;
   }
   if (patch.aiCooldownSeconds !== undefined) row.ai_cooldown_seconds = patch.aiCooldownSeconds;
-  if (patch.aiMaxResponsesPerHour !== undefined) {
+  if (Object.hasOwn(patch, 'aiMaxResponsesPerHour')) {
     row.ai_max_responses_per_hour = patch.aiMaxResponsesPerHour ?? null;
   }
-  if (patch.deletedMessageRetentionDays !== undefined) {
+  if (Object.hasOwn(patch, 'deletedMessageRetentionDays')) {
     row.deleted_message_retention_days = patch.deletedMessageRetentionDays ?? null;
   }
   if (patch.dryRunEnabled !== undefined) row.dry_run_enabled = patch.dryRunEnabled;
+  if (patch.vip !== undefined) row.vip = patch.vip;
+  if (patch.neverAutoReply !== undefined) row.never_auto_reply = patch.neverAutoReply;
+  if (patch.neverModerate !== undefined) row.never_moderate = patch.neverModerate;
+  if (patch.ownerNotes !== undefined) row.owner_notes = patch.ownerNotes || null;
+  if (patch.quietHoursEnabled !== undefined) row.quiet_hours_enabled = patch.quietHoursEnabled;
+  if (Object.hasOwn(patch, 'quietHoursTimezone')) {
+    row.quiet_hours_timezone = patch.quietHoursTimezone || null;
+  }
+  if (patch.quietHoursDays !== undefined) row.quiet_hours_days = patch.quietHoursDays;
+  if (Object.hasOwn(patch, 'quietHoursStartMinutes')) {
+    row.quiet_hours_start_minutes = patch.quietHoursStartMinutes ?? null;
+  }
+  if (Object.hasOwn(patch, 'quietHoursEndMinutes')) {
+    row.quiet_hours_end_minutes = patch.quietHoursEndMinutes ?? null;
+  }
+  if (Object.hasOwn(patch, 'humanTakeoverUntil')) {
+    row.human_takeover_until = patch.humanTakeoverUntil ?? null;
+  }
+  if (patch.approvalRequired !== undefined) row.approval_required = patch.approvalRequired;
+  if (patch.mediaArchiveEnabled !== undefined)
+    row.media_archive_enabled = patch.mediaArchiveEnabled;
+  if (patch.deletedMessageAlertMode !== undefined) {
+    row.deleted_message_alert_mode = patch.deletedMessageAlertMode;
+  }
   return row;
 }
 
@@ -278,6 +371,19 @@ export class ContactsRepository {
       ai_max_responses_per_hour: DEFAULT_CONTACT_SETTINGS.aiMaxResponsesPerHour ?? null,
       deleted_message_retention_days: DEFAULT_CONTACT_SETTINGS.deletedMessageRetentionDays ?? null,
       dry_run_enabled: DEFAULT_CONTACT_SETTINGS.dryRunEnabled,
+      vip: DEFAULT_CONTACT_SETTINGS.vip,
+      never_auto_reply: DEFAULT_CONTACT_SETTINGS.neverAutoReply,
+      never_moderate: DEFAULT_CONTACT_SETTINGS.neverModerate,
+      owner_notes: null,
+      quiet_hours_enabled: DEFAULT_CONTACT_SETTINGS.quietHoursEnabled,
+      quiet_hours_timezone: null,
+      quiet_hours_days: DEFAULT_CONTACT_SETTINGS.quietHoursDays,
+      quiet_hours_start_minutes: null,
+      quiet_hours_end_minutes: null,
+      human_takeover_until: null,
+      approval_required: DEFAULT_CONTACT_SETTINGS.approvalRequired,
+      media_archive_enabled: DEFAULT_CONTACT_SETTINGS.mediaArchiveEnabled,
+      deleted_message_alert_mode: DEFAULT_CONTACT_SETTINGS.deletedMessageAlertMode,
       updated_at: now,
     };
     const { error } = await this.supabase
