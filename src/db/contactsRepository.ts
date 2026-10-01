@@ -38,6 +38,8 @@ export interface ContactSettings {
   aiCooldownSeconds: number;
   aiMaxResponsesPerHour: number | undefined;
   deletedMessageRetentionDays: number | undefined;
+  /** When true, the rule engine evaluates real events normally but logs "would have done X" instead of executing any action. */
+  dryRunEnabled: boolean;
   updatedAt: string;
 }
 
@@ -54,6 +56,7 @@ export const DEFAULT_CONTACT_SETTINGS: Omit<ContactSettings, 'contactId' | 'upda
   aiCooldownSeconds: 0,
   aiMaxResponsesPerHour: undefined,
   deletedMessageRetentionDays: undefined,
+  dryRunEnabled: false,
 };
 
 export interface ContactSettingsPatch {
@@ -69,6 +72,7 @@ export interface ContactSettingsPatch {
   aiCooldownSeconds?: number;
   aiMaxResponsesPerHour?: number | undefined;
   deletedMessageRetentionDays?: number | undefined;
+  dryRunEnabled?: boolean;
 }
 
 export interface ContactPatch {
@@ -102,6 +106,7 @@ interface ContactSettingsRow {
   ai_cooldown_seconds: number;
   ai_max_responses_per_hour: number | null;
   deleted_message_retention_days: number | null;
+  dry_run_enabled: boolean;
   updated_at: string;
 }
 
@@ -133,6 +138,7 @@ function fromSettingsRow(row: ContactSettingsRow): ContactSettings {
     aiCooldownSeconds: row.ai_cooldown_seconds,
     aiMaxResponsesPerHour: row.ai_max_responses_per_hour ?? undefined,
     deletedMessageRetentionDays: row.deleted_message_retention_days ?? undefined,
+    dryRunEnabled: row.dry_run_enabled,
     updatedAt: row.updated_at,
   };
 }
@@ -171,6 +177,7 @@ function toSettingsPatchRow(patch: ContactSettingsPatch): Record<string, unknown
   if (patch.deletedMessageRetentionDays !== undefined) {
     row.deleted_message_retention_days = patch.deletedMessageRetentionDays ?? null;
   }
+  if (patch.dryRunEnabled !== undefined) row.dry_run_enabled = patch.dryRunEnabled;
   return row;
 }
 
@@ -270,6 +277,7 @@ export class ContactsRepository {
       ai_cooldown_seconds: DEFAULT_CONTACT_SETTINGS.aiCooldownSeconds,
       ai_max_responses_per_hour: DEFAULT_CONTACT_SETTINGS.aiMaxResponsesPerHour ?? null,
       deleted_message_retention_days: DEFAULT_CONTACT_SETTINGS.deletedMessageRetentionDays ?? null,
+      dry_run_enabled: DEFAULT_CONTACT_SETTINGS.dryRunEnabled,
       updated_at: now,
     };
     const { error } = await this.supabase

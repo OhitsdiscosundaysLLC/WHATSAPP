@@ -123,6 +123,11 @@
       label: 'Monitoring',
       help: 'Store normalized messages for this group — required for deleted-message/view-once archiving.',
     },
+    {
+      key: 'dryRunEnabled',
+      label: 'Dry Run',
+      help: 'Evaluate rules normally, but log "would have done X" instead of actually sending/moderating. See Activity for what it would have done.',
+    },
   ];
   const generalToggles = document.getElementById('general-toggles');
   const settingsError = document.getElementById('settings-error');

@@ -9,6 +9,7 @@ import {
 } from '../db/contactsRepository';
 import { FakeSupabaseClient } from '../db/fakeSupabaseClient';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
+import { OwnerInboxRepository } from '../db/ownerInboxRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import type { NormalizedMessageEvent } from '../whatsapp/events/messageNormalizer';
@@ -65,6 +66,7 @@ function buildEngine(
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
+    ownerInbox: new OwnerInboxRepository(fake as unknown as SupabaseClient),
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {
@@ -264,5 +266,34 @@ describe('RuleEngine — private (contact) auto_reply', () => {
       settings,
     );
     expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('Dry Run: a qualifying DM never actually sends, but is logged as "would have"', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildEngine(fake, sender);
+    await deps.rulesRepository.createForContact({
+      contactId: 'contact-row-1',
+      name: 'Hours reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluatePrivate(
+      privateEvent(),
+      'contact-row-1',
+      settingsWith({ privateAutoReplyEnabled: true, dryRunEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({ reason: 'dry_run' });
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'rule.dry_run')).toBeTruthy();
   });
 });

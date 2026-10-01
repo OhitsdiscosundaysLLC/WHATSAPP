@@ -4,6 +4,7 @@ import type { AccountSettingsRepository } from '../../db/accountSettingsReposito
 import type { AuditRepository } from '../../db/auditRepository';
 import type { CallEventsRepository } from '../../db/callEventsRepository';
 import type { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
+import type { OwnerInboxRepository } from '../../db/ownerInboxRepository';
 import type { MessageSender } from '../../rules/actionEngine';
 
 export interface CallConnection {
@@ -15,6 +16,7 @@ export interface CallHandlerDeps {
   accountSettingsRepository: AccountSettingsRepository;
   callEventsRepository: CallEventsRepository;
   auditRepository: AuditRepository;
+  ownerInbox: OwnerInboxRepository;
   notificationCooldowns: NotificationCooldownRepository;
   sender: MessageSender;
   connection: CallConnection;
@@ -45,6 +47,13 @@ export async function handleCallEvent(call: WACallEvent, deps: CallHandlerDeps):
     } else {
       switch (settings.callResponseAction) {
         case 'AUTO_REJECT':
+          // Emergency Pause stops autonomous actions (rejecting the call),
+          // but the call is still recorded — pause never reduces visibility,
+          // only autonomous behavior. See docs/DECISIONS.md.
+          if (settings.automationPaused) {
+            actionTaken = 'paused_skip';
+            break;
+          }
           try {
             await deps.connection.rejectCall(call.id, call.from);
             actionTaken = 'rejected';
@@ -82,7 +91,9 @@ export async function handleCallEvent(call: WACallEvent, deps: CallHandlerDeps):
         }
 
         case 'SEND_MESSAGE_AFTER':
-          if (settings.callResponseMessage) {
+          if (settings.automationPaused) {
+            actionTaken = 'paused_skip';
+          } else if (settings.callResponseMessage) {
             try {
               await deps.sender.sendTextMessage(call.from, settings.callResponseMessage);
               actionTaken = 'sent_message';
@@ -119,4 +130,16 @@ export async function handleCallEvent(call: WACallEvent, deps: CallHandlerDeps):
     eventType: 'call.received',
     detail: { status: call.status, from: call.from, isVideo: Boolean(call.isVideo), actionTaken },
   });
+
+  // Owner Inbox visibility for every incoming call offer — the bot never
+  // "answers" a call (see this file's doc comment), so every offer is
+  // effectively a call only the owner can actually respond to.
+  if (call.status === 'offer') {
+    await deps.ownerInbox.record({
+      accountId: deps.accountId,
+      category: 'missed_call',
+      title: `Incoming ${call.isVideo ? 'video ' : ''}call from ${call.from}`,
+      detail: { from: call.from, isVideo: Boolean(call.isVideo), actionTaken },
+    });
+  }
 }

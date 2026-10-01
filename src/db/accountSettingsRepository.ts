@@ -7,6 +7,8 @@ export interface AccountSettings {
   callHandlingEnabled: boolean;
   callResponseAction: CallResponseAction;
   callResponseMessage: string | undefined;
+  /** Emergency Pause — stops autonomous outbound automation (rule actions, auto-reply, moderation actions, call auto-responses) while monitoring/archiving and owner notifications keep running. Never blocks the owner's own explicit commands. */
+  automationPaused: boolean;
   updatedAt: string;
 }
 
@@ -14,6 +16,7 @@ export interface AccountSettingsPatch {
   callHandlingEnabled?: boolean;
   callResponseAction?: CallResponseAction;
   callResponseMessage?: string | undefined;
+  automationPaused?: boolean;
 }
 
 interface AccountSettingsRow {
@@ -21,6 +24,7 @@ interface AccountSettingsRow {
   call_handling_enabled: boolean;
   call_response_action: CallResponseAction;
   call_response_message: string | null;
+  automation_paused: boolean;
   updated_at: string;
 }
 
@@ -30,6 +34,7 @@ function fromRow(row: AccountSettingsRow): AccountSettings {
     callHandlingEnabled: row.call_handling_enabled,
     callResponseAction: row.call_response_action,
     callResponseMessage: row.call_response_message ?? undefined,
+    automationPaused: row.automation_paused,
     updatedAt: row.updated_at,
   };
 }
@@ -54,6 +59,7 @@ export class AccountSettingsRepository {
       call_handling_enabled: false,
       call_response_action: 'LOG_ONLY' as const,
       call_response_message: null,
+      automation_paused: false,
       updated_at: now,
     };
     const { error } = await this.supabase
@@ -86,6 +92,7 @@ export class AccountSettingsRepository {
     if (patch.callResponseMessage !== undefined) {
       row.call_response_message = patch.callResponseMessage || null;
     }
+    if (patch.automationPaused !== undefined) row.automation_paused = patch.automationPaused;
 
     const { data, error } = await this.supabase
       .from('whatsapp_account_settings')

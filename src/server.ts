@@ -15,6 +15,7 @@ import { createAuthRouter } from './web/authRoutes';
 import { createContactRouter } from './web/contactRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
 import { createGroupRouter } from './web/groupRoutes';
+import { createInboxRouter } from './web/inboxRoutes';
 import type { WhatsAppStatus } from './whatsapp/types';
 
 const log = createChildLogger('http');
@@ -88,6 +89,9 @@ export function createServer({
 
   // Authenticated admin/permission management — owner stays read-only/env-only.
   app.use('/api/admins', createAdminRouter());
+
+  // Authenticated Owner Inbox — the human-readable "look at this" feed.
+  app.use('/api/inbox', createInboxRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WhatsApp Bot — Groups</title>
+    <title>WhatsApp Bot — Inbox</title>
     <meta name="csrf-token" content="__CSRF_TOKEN__" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -15,9 +15,9 @@
       </div>
       <nav class="nav-links">
         <a class="nav-link" href="/">Accounts</a>
-        <a class="nav-link active" href="/groups">Groups</a>
+        <a class="nav-link" href="/groups">Groups</a>
         <a class="nav-link" href="/contacts">Contacts</a>
-        <a class="nav-link" href="/inbox">Inbox</a>
+        <a class="nav-link active" href="/inbox">Inbox</a>
         <a class="nav-link" href="/activity">Activity</a>
         <a class="nav-link" href="/admins">Admins</a>
         <a class="nav-link" href="/health">Health</a>
@@ -28,27 +28,36 @@
     <main class="app-main">
       <section>
         <div class="section-head">
-          <h2>WhatsApp Groups</h2>
+          <h2>Inbox</h2>
+          <div>
+            <label class="muted" style="font-size: 13px; margin-right: 12px">
+              <input type="checkbox" id="unread-only-filter" /> Unread only
+            </label>
+          </div>
         </div>
         <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
-          Groups your connected WhatsApp accounts belong to. Every group starts with the bot OFF —
-          click a group to configure it.
+          Things worth a look: deleted messages, missed calls, moderation actions, AI failures, and
+          rule fires. The full raw log of everything the bot does lives on the
+          <a href="/activity">Activity</a> page.
         </p>
-        <div id="groups-error" class="error-text"></div>
-        <div id="group-list" class="group-list"></div>
-        <div id="empty-state" class="empty-state hidden">
-          <p>No groups discovered yet.</p>
-          <p class="muted">
-            Groups appear here automatically once a connected WhatsApp account is a member of one.
-          </p>
+        <div id="inbox-error" class="error-text"></div>
+        <div class="card">
+          <div id="inbox-list" class="activity-list"></div>
+          <div id="inbox-empty" class="empty-state hidden">
+            <p>Nothing here right now.</p>
+            <p class="muted">
+              Deleted messages, missed calls, moderation actions, AI failures, and rule fires will
+              show up here as they happen.
+            </p>
+          </div>
         </div>
         <div id="unconfigured-state" class="empty-state hidden">
-          <p>Groups require Supabase to be configured.</p>
+          <p>The Owner Inbox requires Supabase to be configured.</p>
           <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
         </div>
       </section>
     </main>
 
-    <script src="/groups.js"></script>
+    <script src="/inbox.js"></script>
   </body>
 </html>

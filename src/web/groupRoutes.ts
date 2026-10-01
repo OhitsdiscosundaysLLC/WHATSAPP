@@ -243,6 +243,7 @@ export function createGroupRouter(): Router {
       'aiAutoReplyEnabled',
       'aiSemanticClassificationEnabled',
       'moderationDestructiveActionsEnabled',
+      'dryRunEnabled',
     ] as const) {
       if (typeof body?.[key] === 'boolean') patch[key] = body[key];
     }

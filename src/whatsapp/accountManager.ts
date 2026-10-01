@@ -15,6 +15,7 @@ import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
 import { MessagesRepository } from '../db/messagesRepository';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
 import { NotificationCooldownRepository } from '../db/notificationCooldownRepository';
+import { OwnerInboxRepository } from '../db/ownerInboxRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import { getSupabaseClient } from '../db/supabaseClient';
@@ -321,6 +322,7 @@ export class AccountManager {
       const notificationCooldowns = new NotificationCooldownRepository(supabase);
       const identityMapRepository = new IdentityMapRepository(supabase);
       const adminsRepository = new AdminsRepository(supabase);
+      const ownerInbox = new OwnerInboxRepository(supabase);
 
       const sender = {
         sendTextMessage: (jid: string, text: string) => manager.sendTextMessage(jid, text),
@@ -355,6 +357,7 @@ export class AccountManager {
         ruleStateRepository,
         moderationStateRepository,
         auditRepository,
+        ownerInbox,
         classifier: new DeterministicResponseClassifier(),
         sender,
         moderationCapabilities,
@@ -371,10 +374,12 @@ export class AccountManager {
         identityMapRepository,
         ruleEngine,
         auditRepository,
+        accountSettingsRepository,
         deletedMessageHandlerDeps: {
           groupsRepository,
           messagesRepository,
           auditRepository,
+          ownerInbox,
           notificationCooldowns,
           sender,
           ownerJids: ownerJids(),
@@ -384,6 +389,7 @@ export class AccountManager {
           contactsRepository,
           messagesRepository,
           auditRepository,
+          ownerInbox,
           notificationCooldowns,
           sender,
           ownerJids: ownerJids(),
@@ -443,6 +449,7 @@ export class AccountManager {
           accountSettingsRepository,
           callEventsRepository,
           auditRepository,
+          ownerInbox,
           notificationCooldowns,
           sender,
           connection: { rejectCall: (callId, callFrom) => manager.rejectCall(callId, callFrom) },

@@ -151,6 +151,11 @@
       label: 'Monitoring',
       help: 'Store normalized messages for this chat — required for the deleted-message archive.',
     },
+    {
+      key: 'dryRunEnabled',
+      label: 'Dry Run',
+      help: 'Evaluate auto-reply rules normally, but log "would have sent X" instead of actually sending. See Activity for what it would have done.',
+    },
   ];
   const generalToggles = document.getElementById('general-toggles');
   const settingsError = document.getElementById('settings-error');

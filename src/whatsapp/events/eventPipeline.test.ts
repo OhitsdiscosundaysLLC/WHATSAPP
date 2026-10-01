@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { WAMessage } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
+import { AccountSettingsRepository } from '../../db/accountSettingsRepository';
 import { AuditRepository } from '../../db/auditRepository';
 import { ContactsRepository } from '../../db/contactsRepository';
 import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
@@ -11,6 +12,7 @@ import { MediaArchiveRepository } from '../../db/mediaArchiveRepository';
 import { MessagesRepository } from '../../db/messagesRepository';
 import { ModerationStateRepository } from '../../db/moderationStateRepository';
 import { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
+import { OwnerInboxRepository } from '../../db/ownerInboxRepository';
 import { RulesRepository } from '../../db/rulesRepository';
 import { RuleStateRepository } from '../../db/ruleStateRepository';
 import { DeterministicResponseClassifier } from '../../rules/classifiers/responseClassifier';
@@ -51,11 +53,13 @@ function setup() {
     fake as unknown as SupabaseClient,
   );
   const mediaArchiveRepository = new MediaArchiveRepository(fake as unknown as SupabaseClient);
+  const ownerInbox = new OwnerInboxRepository(fake as unknown as SupabaseClient);
   const ruleEngine = new RuleEngine({
     rulesRepository,
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository,
+    ownerInbox,
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {
@@ -67,6 +71,9 @@ function setup() {
     logger: testLogger,
   });
   const identityMapRepository = new IdentityMapRepository(fake as unknown as SupabaseClient);
+  const accountSettingsRepository = new AccountSettingsRepository(
+    fake as unknown as SupabaseClient,
+  );
   const pipeline = new EventPipeline({
     accountId: ACCOUNT_ID,
     groupsRepository,
@@ -75,10 +82,12 @@ function setup() {
     identityMapRepository,
     ruleEngine,
     auditRepository,
+    accountSettingsRepository,
     deletedMessageHandlerDeps: {
       groupsRepository,
       messagesRepository,
       auditRepository,
+      ownerInbox,
       notificationCooldowns,
       sender,
       ownerJids: [],
@@ -88,6 +97,7 @@ function setup() {
       contactsRepository,
       messagesRepository,
       auditRepository,
+      ownerInbox,
       notificationCooldowns,
       sender,
       ownerJids: [],
@@ -130,6 +140,8 @@ function setup() {
     messagesRepository,
     rulesRepository,
     auditRepository,
+    accountSettingsRepository,
+    ownerInbox,
     pipeline,
     sender,
   };
@@ -319,6 +331,43 @@ describe('EventPipeline', () => {
     expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
   });
 
+  it('Emergency Pause stops rule evaluation in groups, but monitoring/storage still runs', async () => {
+    const { pipeline, groupsRepository, rulesRepository, accountSettingsRepository, sender, fake } =
+      setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true, monitoringEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+    await accountSettingsRepository.update(ACCOUNT_ID, { automationPaused: true });
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        message: {
+          extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+        },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(1);
+    expect(
+      fake
+        .rawRows('whatsapp_audit_logs')
+        .some((row) => (row as { event_type: string }).event_type === 'automation.paused_skip'),
+    ).toBe(true);
+  });
+
   it("group A's settings never affect how messages in group B are handled", async () => {
     const { pipeline, groupsRepository, fake } = setup();
     const groupA = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'a@g.us', 'A');
@@ -428,6 +477,54 @@ describe('EventPipeline — private messages', () => {
       'contact@s.whatsapp.net',
       'We are open 9-5.',
     );
+  });
+
+  it('Emergency Pause stops auto-reply in private chats, but monitoring still runs', async () => {
+    const {
+      pipeline,
+      contactsRepository,
+      rulesRepository,
+      accountSettingsRepository,
+      fake,
+      sender,
+    } = setup();
+
+    await pipeline.handleMessage(
+      waPrivateMessage({ message: { conversation: 'what are your hours' } }),
+      'notify',
+    );
+    const contact = await contactsRepository.getByJid(ACCOUNT_ID, 'contact@s.whatsapp.net');
+    await contactsRepository.updateSettings(contact!.id, {
+      privateMonitoringEnabled: true,
+      privateAutoReplyEnabled: true,
+    });
+    await rulesRepository.createForContact({
+      contactId: contact!.id,
+      name: 'Hours reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+    await accountSettingsRepository.update(ACCOUNT_ID, { automationPaused: true });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({
+        key: { remoteJid: 'contact@s.whatsapp.net', fromMe: false, id: 'MSG2' },
+        message: { conversation: 'what are your hours' },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(1);
+    expect(
+      fake
+        .rawRows('whatsapp_audit_logs')
+        .some((row) => (row as { event_type: string }).event_type === 'automation.paused_skip'),
+    ).toBe(true);
   });
 
   it("contact A's settings never affect how messages from contact B are handled", async () => {

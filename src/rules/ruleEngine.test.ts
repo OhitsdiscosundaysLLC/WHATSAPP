@@ -5,6 +5,7 @@ import { AuditRepository } from '../db/auditRepository';
 import { FakeSupabaseClient } from '../db/fakeSupabaseClient';
 import { DEFAULT_GROUP_SETTINGS, type GroupSettings } from '../db/groupsRepository';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
+import { OwnerInboxRepository } from '../db/ownerInboxRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import type { NormalizedMessageEvent } from '../whatsapp/events/messageNormalizer';
@@ -77,6 +78,7 @@ function buildEngine(
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
+    ownerInbox: new OwnerInboxRepository(fake as unknown as SupabaseClient),
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {
@@ -506,6 +508,32 @@ describe('RuleEngine — response_threshold ("N distinct people respond")', () =
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({ actionType: 'SEND_MESSAGE', status: 'success' });
   });
+
+  it('Dry Run: threshold reached never actually sends, but is logged as "would have"', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Five people congratulate',
+      triggerType: 'response_threshold',
+      config: { ...FIVE_PERSON_CONFIG, threshold: 1 },
+    });
+
+    await engine.evaluate(
+      responseEvent({ senderJid: 'alice@s.whatsapp.net', text: 'Congrats sir' }),
+      'group-1',
+      { ...DEFAULT_SETTINGS, dryRunEnabled: true },
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({ reason: 'dry_run' });
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'rule.dry_run')).toBeTruthy();
+    expect(events.find((e) => e.eventType === 'rule.fired')).toBeFalsy();
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -549,6 +577,7 @@ function buildFullEngine(
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
+    ownerInbox: new OwnerInboxRepository(fake as unknown as SupabaseClient),
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {
@@ -755,6 +784,49 @@ describe('RuleEngine — auto_reply', () => {
     ]);
   });
 
+  it('AI_REPLY generation failure never crashes, is audited as failed, and reaches the Owner Inbox', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const generateReply = vi.fn().mockRejectedValue(new Error('OpenAI request timed out'));
+    const { engine, deps } = buildFullEngine(fake, sender, {
+      service: { classify: vi.fn(), generateReply } as never,
+      usageRepository: {
+        getLastSuccessfulAt: vi.fn().mockResolvedValue(undefined),
+        countRecentSuccessful: vi.fn().mockResolvedValue(0),
+      } as never,
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'AI hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'AI_REPLY' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await expect(
+      engine.evaluate(
+        autoReplyEvent(),
+        'group-1',
+        settingsWith({
+          autoReplyEnabled: true,
+          aiEnabled: true,
+          aiAutoReplyEnabled: true,
+          aiSemanticClassificationEnabled: true,
+        }),
+      ),
+    ).resolves.not.toThrow();
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ actionType: 'AI_REPLY', status: 'failed' });
+    const items = await deps.ownerInbox.list('acct-1');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ category: 'ai_failure', groupId: 'group-1' });
+  });
+
   it('skips (never crashes) when AI is required but OPENAI_API_KEY is not configured', async () => {
     const fake = new FakeSupabaseClient();
     const sender = fakeSender();
@@ -840,6 +912,39 @@ describe('RuleEngine — auto_reply', () => {
     // Evaluate against group-1 (different group, no rule there), with auto-reply enabled.
     await engine.evaluate(autoReplyEvent(), 'group-1', settingsWith({ autoReplyEnabled: true }));
     expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('Dry Run: a qualifying message never actually sends, but is logged as "would have"', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, dryRunEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({
+      reason: 'dry_run',
+      wouldHaveActed: 'send message: "We are open 9-5."',
+    });
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'rule.dry_run')).toBeTruthy();
+    expect(events.find((e) => e.eventType === 'rule.fired')).toBeFalsy();
   });
 });
 
@@ -1030,6 +1135,33 @@ describe('RuleEngine — moderation', () => {
     expect(firedEvent?.detail).toMatchObject({ violationType: 'banned_phrase' });
   });
 
+  it('records an Owner Inbox item when a moderation rule fires', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'WARN', message: 'Please watch your language.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(moderationEvent(), 'group-1', settingsWith({ moderationEnabled: true }));
+
+    const items = await deps.ownerInbox.list('acct-1');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ category: 'moderation', groupId: 'group-1' });
+  });
+
   it('a clean message never triggers moderation', async () => {
     const fake = new FakeSupabaseClient();
     const sender = fakeSender();
@@ -1056,5 +1188,44 @@ describe('RuleEngine — moderation', () => {
       settingsWith({ moderationEnabled: true }),
     );
     expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('Dry Run: DELETE_MESSAGE never actually deletes, but is logged as "would have"', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'DELETE_MESSAGE' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      moderationEvent(),
+      'group-1',
+      settingsWith({
+        moderationEnabled: true,
+        moderationDestructiveActionsEnabled: true,
+        dryRunEnabled: true,
+      }),
+    );
+
+    expect(deps.moderationCapabilities.deleteMessage).not.toHaveBeenCalled();
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({ reason: 'dry_run' });
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'moderation.dry_run')).toBeTruthy();
+    expect(events.find((e) => e.eventType === 'moderation.fired')).toBeFalsy();
   });
 });

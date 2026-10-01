@@ -7,6 +7,7 @@ import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
 import { GroupsRepository } from '../../db/groupsRepository';
 import { MessagesRepository } from '../../db/messagesRepository';
 import { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
+import { OwnerInboxRepository } from '../../db/ownerInboxRepository';
 import {
   extractRevokedKey,
   handleDeletedMessage,
@@ -61,6 +62,7 @@ async function setup() {
   const groupsRepository = new GroupsRepository(fake as unknown as SupabaseClient);
   const messagesRepository = new MessagesRepository(fake as unknown as SupabaseClient);
   const auditRepository = new AuditRepository(fake as unknown as SupabaseClient);
+  const ownerInbox = new OwnerInboxRepository(fake as unknown as SupabaseClient);
   const notificationCooldowns = new NotificationCooldownRepository(
     fake as unknown as SupabaseClient,
   );
@@ -71,12 +73,22 @@ async function setup() {
     groupsRepository,
     messagesRepository,
     auditRepository,
+    ownerInbox,
     notificationCooldowns,
     sender,
     ownerJids: ['15550001111@s.whatsapp.net'],
     logger: testLogger,
   };
-  return { fake, groupsRepository, messagesRepository, auditRepository, sender, group, deps };
+  return {
+    fake,
+    groupsRepository,
+    messagesRepository,
+    auditRepository,
+    ownerInbox,
+    sender,
+    group,
+    deps,
+  };
 }
 
 describe('handleDeletedMessage', () => {
@@ -152,6 +164,29 @@ describe('handleDeletedMessage', () => {
     const deletedEvent = events.find((e) => e.eventType === 'message.deleted');
     expect(deletedEvent).toBeDefined();
     expect(deletedEvent?.detail).toMatchObject({ whatsappMessageId: 'MSG1' });
+  });
+
+  it('records an Owner Inbox item — independent of the notification cooldown', async () => {
+    const { group, deps, groupsRepository, ownerInbox } = await setup();
+    await groupsRepository.updateSettings(group.id, { deletedMessageArchiveEnabled: true });
+
+    await handleDeletedMessage(
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      'group@g.us',
+      deps,
+    );
+    await handleDeletedMessage(
+      { remoteJid: 'group@g.us', id: 'MSG2', participant: 'bob@s.whatsapp.net' },
+      'group@g.us',
+      deps,
+    );
+
+    // Both deletions get an inbox item, even though the 2nd WhatsApp
+    // notification was suppressed by cooldown — inbox visibility is never
+    // throttled the way the outbound WhatsApp ping is.
+    const items = await ownerInbox.list('acct-1');
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ category: 'deleted_message', groupId: group.id });
   });
 
   it('notifies the owner (cooldown-protected) when configured', async () => {

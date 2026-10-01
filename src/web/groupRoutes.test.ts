@@ -421,6 +421,25 @@ describe('group routes — extended settings fields (Phase 6+)', () => {
       moderationDestructiveActionsEnabled: true,
     });
   });
+
+  it('accepts and persists dryRunEnabled (Dry Run mode)', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('dry-run@g.us', 'Dry Run Group');
+
+    const getRes = await request(app)
+      .get(`/api/groups/${groupId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(getRes.body.settings.dryRunEnabled).toBe(false);
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ dryRunEnabled: true })
+      .expect(200);
+    expect(res.body.settings.dryRunEnabled).toBe(true);
+  });
 });
 
 describe('group routes — deleted messages and media archive', () => {

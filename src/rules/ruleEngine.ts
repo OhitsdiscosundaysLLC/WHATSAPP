@@ -4,6 +4,7 @@ import type { AuditRepository } from '../db/auditRepository';
 import type { ContactSettings } from '../db/contactsRepository';
 import type { GroupSettings } from '../db/groupsRepository';
 import type { ModerationStateRepository } from '../db/moderationStateRepository';
+import type { OwnerInboxRepository } from '../db/ownerInboxRepository';
 import type { GroupRule, RulesRepository } from '../db/rulesRepository';
 import type { RuleStateRepository } from '../db/ruleStateRepository';
 import type { AiCallContext, AIService } from '../ai/aiService';
@@ -20,6 +21,7 @@ import { qualifiesForModeration } from './moderation/moderationQualifier';
 import type {
   ActionConfig,
   AutoReplyConfig,
+  ModerationActionConfig,
   ModerationConfig,
   ResponseThresholdConfig,
 } from './ruleConfig';
@@ -29,6 +31,8 @@ export interface RuleEngineDeps {
   ruleStateRepository: RuleStateRepository;
   moderationStateRepository: ModerationStateRepository;
   auditRepository: AuditRepository;
+  /** The human-readable "look at this" feed — see src/db/ownerInboxRepository.ts. Populated only from structured data already known at each call site, never AI-generated guessing. */
+  ownerInbox: OwnerInboxRepository;
   classifier: ResponseClassifier;
   sender: MessageSender;
   moderationCapabilities: ModerationCapabilities;
@@ -78,7 +82,7 @@ export class RuleEngine {
     for (const rule of rules) {
       switch (rule.triggerType) {
         case 'response_threshold':
-          await this.evaluateResponseThreshold(rule, event, groupId);
+          await this.evaluateResponseThreshold(rule, event, groupId, settings);
           break;
         case 'auto_reply':
           await this.evaluateAutoReply(rule, event, groupId, settings);
@@ -127,6 +131,7 @@ export class RuleEngine {
     rule: GroupRule,
     event: NormalizedMessageEvent,
     groupId: string,
+    settings: GroupSettings,
   ): Promise<void> {
     if (!event.groupJid) return; // narrows the type for TS below; evaluate() already enforces this
 
@@ -207,13 +212,43 @@ export class RuleEngine {
       }
     }
 
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    if (settings.dryRunEnabled) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: targetMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'dry_run', wouldHaveActed: describeAction(config.action) },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId,
+        eventType: 'rule.dry_run',
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          targetMessageId,
+          distinctResponders: count,
+          actionType: config.action.type,
+          wouldHaveActed: describeAction(config.action),
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, groupId, targetMessageId },
+        'Rule would have fired (dry run)',
+      );
+      return;
+    }
+
     const result = await executeAction(config.action, {
       groupJid,
       sender: this.deps.sender,
       ownerJids: this.deps.ownerJids,
     });
-
-    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
 
     await this.deps.auditRepository.recordAction({
       accountId,
@@ -350,6 +385,7 @@ export class RuleEngine {
         });
         resolvedAction = { type: 'SEND_MESSAGE', message: generated };
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
         await this.deps.auditRepository.recordAction({
           accountId,
           groupId,
@@ -357,7 +393,14 @@ export class RuleEngine {
           triggerWhatsappMessageId: event.whatsappMessageId,
           actionType: 'AI_REPLY',
           status: 'failed',
-          detail: { error: err instanceof Error ? err.message : String(err) },
+          detail: { error: errorMessage },
+        });
+        await this.deps.ownerInbox.record({
+          accountId,
+          groupId,
+          category: 'ai_failure',
+          title: `AI reply generation failed in "${rule.name}"`,
+          detail: { ruleId: rule.id, ruleName: rule.name, error: errorMessage },
         });
         return;
       }
@@ -365,13 +408,42 @@ export class RuleEngine {
       resolvedAction = config.action;
     }
 
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    if (settings.dryRunEnabled) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'dry_run', wouldHaveActed: describeAction(resolvedAction) },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId,
+        eventType: 'rule.dry_run',
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerType: 'auto_reply',
+          actionType: config.action.type,
+          wouldHaveActed: describeAction(resolvedAction),
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, groupId },
+        'Auto-reply rule would have fired (dry run)',
+      );
+      return;
+    }
+
     const result = await executeAction(resolvedAction, {
       groupJid,
       sender: this.deps.sender,
       ownerJids: this.deps.ownerJids,
     });
-
-    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
 
     await this.deps.auditRepository.recordAction({
       accountId,
@@ -504,6 +576,7 @@ export class RuleEngine {
         });
         resolvedAction = { type: 'SEND_MESSAGE', message: generated };
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
         await this.deps.auditRepository.recordAction({
           accountId,
           groupId: undefined,
@@ -512,7 +585,14 @@ export class RuleEngine {
           triggerWhatsappMessageId: event.whatsappMessageId,
           actionType: 'AI_REPLY',
           status: 'failed',
-          detail: { error: err instanceof Error ? err.message : String(err) },
+          detail: { error: errorMessage },
+        });
+        await this.deps.ownerInbox.record({
+          accountId,
+          contactId,
+          category: 'ai_failure',
+          title: `AI reply generation failed in "${rule.name}"`,
+          detail: { ruleId: rule.id, ruleName: rule.name, error: errorMessage },
         });
         return;
       }
@@ -520,13 +600,44 @@ export class RuleEngine {
       resolvedAction = config.action;
     }
 
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    if (settings.dryRunEnabled) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId: undefined,
+        contactId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'dry_run', wouldHaveActed: describeAction(resolvedAction) },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId: undefined,
+        contactId,
+        eventType: 'rule.dry_run',
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerType: 'auto_reply',
+          actionType: config.action.type,
+          wouldHaveActed: describeAction(resolvedAction),
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, contactId },
+        'Private auto-reply rule would have fired (dry run)',
+      );
+      return;
+    }
+
     const result = await executeAction(resolvedAction, {
       groupJid: contactJid,
       sender: this.deps.sender,
       ownerJids: this.deps.ownerJids,
     });
-
-    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
 
     await this.deps.auditRepository.recordAction({
       accountId,
@@ -608,6 +719,42 @@ export class RuleEngine {
       }
     }
 
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    if (settings.dryRunEnabled) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: {
+          reason: 'dry_run',
+          wouldHaveActed: describeAction(config.action),
+          violationType: qualification.violationType,
+          ...(qualification.matchedText ? { matchedText: qualification.matchedText } : {}),
+        },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId,
+        eventType: 'moderation.dry_run',
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          violationType: qualification.violationType,
+          actionType: config.action.type,
+          wouldHaveActed: describeAction(config.action),
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, groupId, violationType: qualification.violationType },
+        'Moderation rule would have fired (dry run)',
+      );
+      return;
+    }
+
     const result = await executeModerationAction(config.action, {
       groupJid,
       sender: this.deps.sender,
@@ -622,8 +769,6 @@ export class RuleEngine {
       },
       targetSenderJid: event.senderJid,
     });
-
-    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
 
     await this.deps.auditRepository.recordAction({
       accountId,
@@ -650,6 +795,20 @@ export class RuleEngine {
         actionStatus: result.status,
       },
     });
+    await this.deps.ownerInbox.record({
+      accountId,
+      groupId,
+      category: 'moderation',
+      title: `Moderation rule "${rule.name}" took action (${config.action.type})`,
+      detail: {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        violationType: qualification.violationType,
+        actionType: config.action.type,
+        actionStatus: result.status,
+        ...(qualification.matchedText ? { matchedText: qualification.matchedText } : {}),
+      },
+    });
 
     this.deps.logger.info(
       {
@@ -660,6 +819,30 @@ export class RuleEngine {
       },
       'Moderation rule fired',
     );
+  }
+}
+
+/**
+ * Human-readable "what would have happened" summary for Dry Run mode's
+ * audit trail — never the owner guessing from raw action JSON. See
+ * docs/DECISIONS.md's Dry Run entry.
+ */
+function describeAction(action: ActionConfig | ModerationActionConfig): string {
+  switch (action.type) {
+    case 'SEND_MESSAGE':
+      return `send message: "${action.message}"`;
+    case 'NOTIFY_OWNER':
+      return `notify owner: "${action.message}"`;
+    case 'WARN':
+      return `warn sender: "${action.message}"`;
+    case 'DELETE_MESSAGE':
+      return 'delete the message';
+    case 'REMOVE_USER':
+      return 'remove the sender from the group';
+    case 'LOG_ONLY':
+      return 'log only (no outbound action)';
+    default:
+      return 'take the configured action';
   }
 }
 

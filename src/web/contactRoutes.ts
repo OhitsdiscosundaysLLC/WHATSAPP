@@ -178,6 +178,7 @@ export function createContactRouter(): Router {
       'privateAiAutoReplyEnabled',
       'privateAiSemanticClassificationEnabled',
       'privateDeletedMessageArchiveEnabled',
+      'dryRunEnabled',
     ] as const) {
       if (typeof body?.[key] === 'boolean') patch[key] = body[key];
     }

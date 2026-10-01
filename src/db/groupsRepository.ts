@@ -45,6 +45,8 @@ export interface GroupSettings {
   mediaMaxFileSizeBytes: number;
   /** Separate, explicit gate for DELETE_MESSAGE/REMOVE_USER — never implied by moderationEnabled alone. */
   moderationDestructiveActionsEnabled: boolean;
+  /** When true, the rule engine evaluates real events normally but logs "would have done X" instead of executing any action — never a live send/delete/remove. */
+  dryRunEnabled: boolean;
   updatedAt: string;
 }
 
@@ -67,6 +69,7 @@ export const DEFAULT_GROUP_SETTINGS: Omit<GroupSettings, 'groupId' | 'updatedAt'
   deletedMessageRetentionDays: undefined,
   mediaMaxFileSizeBytes: 16_777_216,
   moderationDestructiveActionsEnabled: false,
+  dryRunEnabled: false,
 };
 
 export interface GroupSettingsPatch {
@@ -88,6 +91,7 @@ export interface GroupSettingsPatch {
   deletedMessageRetentionDays?: number | undefined;
   mediaMaxFileSizeBytes?: number;
   moderationDestructiveActionsEnabled?: boolean;
+  dryRunEnabled?: boolean;
 }
 
 interface GroupRow {
@@ -119,6 +123,7 @@ interface GroupSettingsRow {
   deleted_message_retention_days: number | null;
   media_max_file_size_bytes: number;
   moderation_destructive_actions_enabled: boolean;
+  dry_run_enabled: boolean;
   updated_at: string;
 }
 
@@ -154,6 +159,7 @@ function fromSettingsRow(row: GroupSettingsRow): GroupSettings {
     deletedMessageRetentionDays: row.deleted_message_retention_days ?? undefined,
     mediaMaxFileSizeBytes: row.media_max_file_size_bytes,
     moderationDestructiveActionsEnabled: row.moderation_destructive_actions_enabled,
+    dryRunEnabled: row.dry_run_enabled,
     updatedAt: row.updated_at,
   };
 }
@@ -199,6 +205,7 @@ function toSettingsPatchRow(patch: GroupSettingsPatch): Record<string, unknown> 
   if (patch.moderationDestructiveActionsEnabled !== undefined) {
     row.moderation_destructive_actions_enabled = patch.moderationDestructiveActionsEnabled;
   }
+  if (patch.dryRunEnabled !== undefined) row.dry_run_enabled = patch.dryRunEnabled;
   return row;
 }
 
@@ -302,6 +309,7 @@ export class GroupsRepository {
       media_max_file_size_bytes: DEFAULT_GROUP_SETTINGS.mediaMaxFileSizeBytes,
       moderation_destructive_actions_enabled:
         DEFAULT_GROUP_SETTINGS.moderationDestructiveActionsEnabled,
+      dry_run_enabled: DEFAULT_GROUP_SETTINGS.dryRunEnabled,
       updated_at: now,
     };
     const { error } = await this.supabase

@@ -105,6 +105,56 @@
     error: 'status-error',
   };
 
+  // Emergency Pause lives on the same per-account settings row as call
+  // handling (src/db/accountSettingsRepository.ts) — reusing the existing
+  // GET/PATCH /api/accounts/:id/call-settings endpoint rather than adding a
+  // parallel one. Fails soft (toggle hidden) when Supabase isn't configured.
+  async function buildPauseToggle(accountId) {
+    const wrap = document.createElement('label');
+    wrap.className = 'toggle';
+    wrap.title =
+      'Emergency Pause — stops autonomous rule/auto-reply/moderation/call actions. Monitoring and owner commands keep working.';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    wrap.appendChild(input);
+    const track = document.createElement('span');
+    track.className = 'toggle-track';
+    wrap.appendChild(track);
+    const thumb = document.createElement('span');
+    thumb.className = 'toggle-thumb';
+    wrap.appendChild(thumb);
+
+    try {
+      const res = await api('/api/accounts/' + accountId + '/call-settings');
+      if (!res.ok) return null;
+      const data = await res.json();
+      input.checked = Boolean(data.settings.automationPaused);
+    } catch (err) {
+      if (err.message === 'unauthenticated') throw err;
+      return null;
+    }
+
+    input.addEventListener('change', async () => {
+      input.disabled = true;
+      try {
+        await api('/api/accounts/' + accountId + '/call-settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ automationPaused: input.checked }),
+        });
+      } catch (err) {
+        if (err.message !== 'unauthenticated') {
+          healthError.textContent = 'Could not save Emergency Pause.';
+          input.checked = !input.checked;
+        }
+      } finally {
+        input.disabled = false;
+      }
+    });
+
+    return wrap;
+  }
+
   async function loadAccounts() {
     const list = document.getElementById('account-list');
     const empty = document.getElementById('account-empty');
@@ -142,9 +192,25 @@
         span.querySelector('span:last-child').textContent = label;
         pills.appendChild(span);
 
+        const pauseLabel = document.createElement('div');
+        pauseLabel.className = 'muted';
+        pauseLabel.style.fontSize = '11px';
+        pauseLabel.style.marginTop = '4px';
+        pauseLabel.textContent = 'Pause automation';
+        const pauseWrap = document.createElement('div');
+        pauseWrap.style.display = 'flex';
+        pauseWrap.style.flexDirection = 'column';
+        pauseWrap.style.alignItems = 'flex-end';
+        pauseWrap.appendChild(pills);
+        pauseWrap.appendChild(pauseLabel);
+
         row.appendChild(main);
-        row.appendChild(pills);
+        row.appendChild(pauseWrap);
         list.appendChild(row);
+
+        buildPauseToggle(account.id).then((toggle) => {
+          if (toggle) pauseWrap.appendChild(toggle);
+        });
       }
     } catch (err) {
       if (err.message !== 'unauthenticated') healthError.textContent = 'Could not load accounts.';

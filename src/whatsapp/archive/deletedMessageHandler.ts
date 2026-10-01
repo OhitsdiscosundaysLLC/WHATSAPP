@@ -5,6 +5,7 @@ import type { ContactsRepository } from '../../db/contactsRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
 import type { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
+import type { OwnerInboxRepository } from '../../db/ownerInboxRepository';
 import type { MessageSender } from '../../rules/actionEngine';
 
 export interface RevokedMessageKey {
@@ -42,6 +43,7 @@ export interface DeletedMessageHandlerDeps {
   groupsRepository: GroupsRepository;
   messagesRepository: MessagesRepository;
   auditRepository: AuditRepository;
+  ownerInbox: OwnerInboxRepository;
   notificationCooldowns: NotificationCooldownRepository;
   sender: MessageSender;
   ownerJids: string[];
@@ -86,6 +88,17 @@ export async function handleDeletedMessage(
       archived: found,
     },
   });
+  await deps.ownerInbox.record({
+    accountId: deps.accountId,
+    groupId: group.id,
+    category: 'deleted_message',
+    title: `A message was deleted in "${group.subject}"`,
+    detail: {
+      whatsappMessageId: revokedKey.id,
+      senderJid: revokedKey.participant,
+      archived: found,
+    },
+  });
 
   if (deps.ownerJids.length === 0) return;
   const allowed = await deps.notificationCooldowns.tryNotify(
@@ -111,6 +124,7 @@ export interface PrivateDeletedMessageHandlerDeps {
   contactsRepository: ContactsRepository;
   messagesRepository: MessagesRepository;
   auditRepository: AuditRepository;
+  ownerInbox: OwnerInboxRepository;
   notificationCooldowns: NotificationCooldownRepository;
   sender: MessageSender;
   ownerJids: string[];
@@ -145,6 +159,17 @@ export async function handlePrivateDeletedMessage(
     groupId: undefined,
     contactId: contact.id,
     eventType: 'message.deleted',
+    detail: {
+      whatsappMessageId: revokedKey.id,
+      senderJid: revokedKey.participant,
+      archived: found,
+    },
+  });
+  await deps.ownerInbox.record({
+    accountId: deps.accountId,
+    contactId: contact.id,
+    category: 'deleted_message',
+    title: `A private message was deleted in a chat with "${contact.displayName || contact.whatsappJid}"`,
     detail: {
       whatsappMessageId: revokedKey.id,
       senderJid: revokedKey.participant,

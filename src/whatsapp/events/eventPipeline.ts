@@ -1,5 +1,6 @@
 import type { MessageUpsertType, WAMessage } from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
+import type { AccountSettingsRepository } from '../../db/accountSettingsRepository';
 import type { AuditRepository } from '../../db/auditRepository';
 import type { ContactsRepository } from '../../db/contactsRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
@@ -34,6 +35,8 @@ export interface EventPipelineDeps {
   identityMapRepository: IdentityMapRepository;
   ruleEngine: RuleEngine;
   auditRepository: AuditRepository;
+  /** Emergency Pause lives here (account-scoped) — checked before any rule evaluation, group or private. */
+  accountSettingsRepository: AccountSettingsRepository;
   /** `undefined` only in contexts with no Supabase/account wiring at all — never in production (see accountManager.ts). */
   deletedMessageHandlerDeps: Omit<DeletedMessageHandlerDeps, 'accountId'>;
   privateDeletedMessageHandlerDeps: Omit<PrivateDeletedMessageHandlerDeps, 'accountId'>;
@@ -185,6 +188,21 @@ export class EventPipeline {
       detail: { messageType: event.messageType, hasQuote: Boolean(event.quotedWhatsappMessageId) },
     });
 
+    // Emergency Pause — stops autonomous rule/auto-reply/moderation actions
+    // while monitoring/storage (already done above) and owner/admin
+    // commands (already handled above) keep working. See
+    // src/db/accountSettingsRepository.ts.
+    const accountSettings = await this.deps.accountSettingsRepository.ensure(this.deps.accountId);
+    if (accountSettings.automationPaused) {
+      await this.deps.auditRepository.recordEvent({
+        accountId: this.deps.accountId,
+        groupId: group.id,
+        eventType: 'automation.paused_skip',
+        detail: { messageType: event.messageType },
+      });
+      return;
+    }
+
     await this.deps.ruleEngine.evaluate(event, group.id, settings);
   }
 
@@ -248,6 +266,18 @@ export class EventPipeline {
       eventType: 'message.received',
       detail: { messageType: event.messageType, scope: 'private' },
     });
+
+    const accountSettings = await this.deps.accountSettingsRepository.ensure(this.deps.accountId);
+    if (accountSettings.automationPaused) {
+      await this.deps.auditRepository.recordEvent({
+        accountId: this.deps.accountId,
+        groupId: undefined,
+        contactId: contact.id,
+        eventType: 'automation.paused_skip',
+        detail: { messageType: event.messageType, scope: 'private' },
+      });
+      return;
+    }
 
     await this.deps.ruleEngine.evaluatePrivate(event, contact.id, settings);
   }

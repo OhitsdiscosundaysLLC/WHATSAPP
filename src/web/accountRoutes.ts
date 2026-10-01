@@ -182,6 +182,7 @@ export function createAccountRouter(): Router {
           callHandlingEnabled?: unknown;
           callResponseAction?: unknown;
           callResponseMessage?: unknown;
+          automationPaused?: unknown;
         }
       | undefined;
     const patch: Parameters<AccountSettingsRepository['update']>[1] = {};
@@ -196,6 +197,9 @@ export function createAccountRouter(): Router {
     }
     if (typeof body?.callResponseMessage === 'string') {
       patch.callResponseMessage = body.callResponseMessage;
+    }
+    if (typeof body?.automationPaused === 'boolean') {
+      patch.automationPaused = body.automationPaused;
     }
 
     const repository = new AccountSettingsRepository(getSupabaseClient());

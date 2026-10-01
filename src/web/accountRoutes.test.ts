@@ -125,6 +125,29 @@ describe('account routes — call settings', () => {
     expect(res.body.settings.callResponseAction).not.toBe('DO_SOMETHING_DANGEROUS');
   });
 
+  it('Emergency Pause: defaults to false, and can be toggled via the same settings endpoint', async () => {
+    const { cookie, csrfToken } = await login();
+    const getRes = await request(app)
+      .get(`/api/accounts/${accountId}/call-settings`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(getRes.body.settings.automationPaused).toBe(false);
+
+    const patchRes = await request(app)
+      .patch(`/api/accounts/${accountId}/call-settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ automationPaused: true })
+      .expect(200);
+    expect(patchRes.body.settings.automationPaused).toBe(true);
+
+    const confirmRes = await request(app)
+      .get(`/api/accounts/${accountId}/call-settings`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(confirmRes.body.settings.automationPaused).toBe(true);
+  });
+
   it('returns 503 when Supabase is not configured', async () => {
     isSupabaseConfiguredMock.mockReturnValueOnce(false);
     const { cookie } = await login();

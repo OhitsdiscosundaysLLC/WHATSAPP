@@ -141,6 +141,25 @@ describe('contact routes — settings isolation', () => {
     expect(resB.body.settings.privateAiEnabled).toBe(false);
     expect(resB.body.settings.privateMonitoringEnabled).toBe(false);
   });
+
+  it('accepts and persists dryRunEnabled (Dry Run mode), defaulting to false', async () => {
+    const { cookie, csrfToken } = await login();
+    const contactId = await seedContact('dry-run@s.whatsapp.net');
+
+    const getRes = await request(app)
+      .get(`/api/contacts/${contactId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(getRes.body.settings.dryRunEnabled).toBe(false);
+
+    const patchRes = await request(app)
+      .patch(`/api/contacts/${contactId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ dryRunEnabled: true })
+      .expect(200);
+    expect(patchRes.body.settings.dryRunEnabled).toBe(true);
+  });
 });
 
 describe('contact routes — block/allowlist/displayName', () => {
