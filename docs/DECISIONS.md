@@ -102,6 +102,44 @@ operational cost. The event-normalization layer in this architecture exists
 partly so a library swap would only require rewriting the `whatsapp/`
 adapter, not the rule engine or anything downstream of it.
 
+### Update (Phase 2): exact version pinned, and a package-naming wrinkle
+
+At Phase 2 implementation time, `npm view @whiskeysockets/baileys` showed:
+
+- `dist-tags`: `latest` → `7.0.0-rc14`, `legacy` → `6.7.24`.
+- The package is **also** published, from the same repository and in
+  lockstep, as the unscoped `baileys` (same version, same publish
+  timestamp). Neither name is deprecated. This project continues to use the
+  scoped `@whiskeysockets/baileys` name from ADR-001 for continuity; the
+  unscoped name is a valid equivalent if preferred later.
+- `latest` resolving to a **release candidate** of an unreleased major
+  version (`7.0.0-rc14`, 14 RCs in) is unusual — it means a plain
+  `npm install @whiskeysockets/baileys` today installs pre-release
+  software. `7.x` also adds a new `whatsapp-rust-bridge` native dependency,
+  indicating a substantial internal rewrite versus the `6.x` line.
+
+**Decision:** pin to `^6.7.24` (the `legacy` dist-tag's version — the last
+published stable `6.x` release), not `latest`. The caret range stays within
+`6.x` (never auto-upgrades into the `7.0.0` prerelease line). Rationale: a
+Phase 2 goal is a _reliable_ connection foundation; shipping a release
+candidate of a major rewrite — with a new native dependency whose build/
+runtime behavior on Render hasn't been evaluated — to production is the
+wrong trade for that goal. All APIs this project uses
+(`makeWASocket`, `useMultiFileAuthState`, `DisconnectReason`,
+`fetchLatestBaileysVersion`, `makeCacheableSignalKeyStore`, the
+`connection.update`/`creds.update` event shapes) were verified directly
+against `6.7.24`'s installed type declarations, not assumed from memory or
+older tutorials. **Revisit this pin once WhiskeySockets ships a stable
+`7.0.0` final release** — re-verify the same API surface before upgrading,
+since a major version bump is exactly when breaking changes are allowed.
+
+Also confirmed from `6.7.24`'s types: `printQRInTerminal` (a `SocketConfig`
+option some older tutorials rely on) is marked
+`@deprecated This feature has been removed` even in this "stable" line —
+the QR must be read from the `connection.update` event's `qr` field and
+rendered by the application itself, which is what `whatsapp/qrDisplay.ts`
+does (via `qrcode-terminal`).
+
 ---
 
 ## ADR-002: Runtime & module system — Node.js 20+, TypeScript, CommonJS
@@ -155,3 +193,85 @@ so before the schema (Phase 3) and group-config model (Phase 4) exist would
 be premature and would misreport a "connected" status the app can't actually
 back up. The health endpoint reports the database component as
 `not_implemented` until Phase 3 lands.
+
+---
+
+## ADR-006: WhatsApp auth-state persistence — abstracted now, durable store deferred to Phase 3
+
+**Status:** Accepted (Phase 2)
+
+### Context
+
+WhatsApp multi-device auth state (`creds` + the signal protocol key store)
+must survive process restarts, or every restart would force a fresh QR
+scan. Render's filesystem is ephemeral across deploys/restarts on typical
+plans, so naively using Baileys' local-folder `useMultiFileAuthState` in
+production would silently break exactly the "no QR after restart"
+requirement this phase exists to satisfy.
+
+Building the production-durable store now would mean reaching into Supabase
+schema/implementation before Phase 3 — explicitly out of scope for Phase 2.
+
+### Decision
+
+Introduce an `AuthStateProvider` interface
+(`src/whatsapp/auth/authStateProvider.ts`) that the connection manager
+depends on exclusively:
+
+```ts
+interface AuthStateProvider {
+  readonly kind: string;
+  init(): Promise<void>;
+  load(): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }>;
+  hasExistingSession(): Promise<boolean>;
+  clear(): Promise<void>;
+}
+```
+
+Phase 2 ships exactly one implementation, `FileAuthStateProvider`, wrapping
+Baileys' `useMultiFileAuthState` against `WHATSAPP_AUTH_DIR` — explicitly
+**development-only**. `hasExistingSession()` is implemented by reading just
+`creds.json`'s `registered` flag, without loading the full signal key
+store, so start-up logging can say "reconnecting with an existing session"
+vs "QR required" cheaply.
+
+### What Phase 3 must provide for production
+
+A second implementation of the same `AuthStateProvider` interface, backed
+by Supabase/Postgres (or another durable, access-controlled store),
+satisfying:
+
+- **Durability** across Render restarts/redeploys (the whole point).
+- **Encryption at rest** for the stored credentials/keys — this is
+  effectively the keys to the linked WhatsApp account; a leaked service
+  role key plus unencrypted auth rows would be equivalent to a stolen
+  session. Exact mechanism (Postgres column-level encryption, pgcrypto, or
+  application-level encryption before the write) is a Phase 3 design
+  decision, not made here.
+- **No logging of contents** — same requirement `FileAuthStateProvider`
+  already meets (see docs/SECURITY.md); a Supabase-backed provider must
+  never log the row contents, only metadata (e.g. "credentials updated").
+- **Same interface, same semantics** for `hasExistingSession()` (cheap,
+  doesn't require loading the full key store) and `clear()` (explicit/
+  controlled only — see the connection manager's logout-vs-disconnect
+  distinction in docs/ARCHITECTURE.md).
+- **Access restricted to the bot process** — the service role key already
+  satisfies this (never shipped to any client/dashboard bundle), but the
+  table(s) holding auth state specifically should not be exposed through
+  any future dashboard API, even to the owner, except perhaps a "clear
+  session" action that goes through `requestLogout()` rather than direct
+  row access.
+
+Until Phase 3 lands, running this bot on Render means re-scanning a QR
+after every restart/redeploy — a known, documented limitation, not a bug.
+
+### Alternatives considered
+
+- **Single-file auth state** (`useSingleFileAuthState` style): simpler but
+  slower to read/write as the key store grows; Baileys itself recommends
+  multi-file for anything beyond toy usage. Rejected for the same reason
+  Phase 1's ADR-001 noted.
+- **Environment-variable-encoded credentials**: would fit Render's env var
+  storage, but credential material changes during normal operation
+  (`creds.update` fires repeatedly), and env vars aren't writable at
+  runtime — a non-starter.

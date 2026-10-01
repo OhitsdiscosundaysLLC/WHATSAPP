@@ -7,10 +7,16 @@ before the next begins — this file is updated as phases complete.
       Tooling (TypeScript, ESLint, Prettier), `docs/`, environment
       configuration loading, structured logging, minimal Express app with a
       health/status endpoint. No WhatsApp, database, or AI integration yet.
-- [ ] **Phase 2 — WhatsApp connection/session**
-      Add Baileys, connection lifecycle (`whatsapp/client.ts`), QR/pairing
-      auth flow, auth-state persistence strategy for a Render deployment,
-      raw-event normalization (`whatsapp/events.ts`), reconnect handling.
+- [x] **Phase 2 — WhatsApp connection/session**
+      Added `@whiskeysockets/baileys@^6.7.24`, full connection lifecycle
+      (`src/whatsapp/`): `AuthStateProvider` abstraction + local-file
+      implementation, QR auth (terminal rendering, deduped), capped
+      exponential backoff reconnect with an inactivity watchdog, explicit
+      logout vs. transient-disconnect handling, `/health` + `/ready`
+      reflecting real connection state, graceful shutdown that preserves
+      the session. Production-durable auth storage deferred to Phase 3 (see
+      docs/DECISIONS.md ADR-006) — still no message/event processing, no
+      database, no AI.
 - [ ] **Phase 3 — Supabase database**
       Wire up `@supabase/supabase-js`, implement the Phase-3 minimum schema
       from `docs/DATABASE.md` as migrations, `services/database.ts`,

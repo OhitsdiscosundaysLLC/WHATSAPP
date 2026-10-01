@@ -106,15 +106,59 @@ Requirements for when that phase is built:
 - Neither table is optional scaffolding — they exist from Phase 3 onward so
   the owner can always answer "why did the bot do that?"
 
-## What Phase 1 actually enforces today
+## WhatsApp authentication material (Phase 2)
 
-Phase 1 ships no WhatsApp connection, no database connection, and no AI
-calls — so most of the above is forward-looking design, not yet enforced
-code. What _is_ true today:
+WhatsApp multi-device auth state (`creds.json` + the signal protocol key
+store) is equivalent to the keys to the linked WhatsApp account — treated
+accordingly:
+
+- **Never logged.** `FileAuthStateProvider` (`src/whatsapp/auth/`) only ever
+  logs the auth _directory path_ and booleans (e.g. "has existing session:
+  true/false"); it never logs file contents. `src/services/logger.ts`'s
+  redact list additionally covers `creds`, `authState`, `keys`, and `qr` (at
+  the top level and one level nested) as defense in depth, since the pino
+  logger instance passed into Baileys is also used by Baileys' own internal
+  logging.
+- **QR codes are short-lived and never persisted.** `whatsapp/qrDisplay.ts`
+  renders the QR to the terminal via `console.log` (not the structured
+  logger) and never writes it to a file, database, or log sink. Identical
+  consecutive QR values are not re-rendered, but this is a UX dedupe, not a
+  storage mechanism — nothing about a QR is retained after it's superseded.
+- **Never exposed via HTTP.** `GET /health` and `GET /ready` report only
+  the connection _state_ (e.g. `"awaiting_qr"`, `"connected"`) and
+  human-readable `detail` strings — never QR contents, credentials, keys,
+  the auth directory path, or WhatsApp account metadata beyond the state
+  machine itself.
+- **Local file permissions.** `FileAuthStateProvider.init()` creates the
+  auth directory with mode `0700` and attempts `chmod 0700` as a
+  best-effort follow-up (not all filesystems honor this — failure is
+  logged and non-fatal, not silently ignored).
+- **`.gitignore` excludes it.** The default `WHATSAPP_AUTH_DIR=./auth`
+  matches the pre-existing `auth/` entry in `.gitignore` (added in Phase
+  1, before this directory existed — intentional advance coverage).
+- **Credentials are cleared only on an explicit, controlled signal**: the
+  connection manager distinguishes a WhatsApp-reported unlink
+  (`DisconnectReason.loggedOut`) and an owner-initiated `requestLogout()`
+  call from every other disconnect reason (transient network issues,
+  version mismatches, replaced sessions). See docs/ARCHITECTURE.md's
+  reconnect-decision table. `requestLogout()` is implemented but not wired
+  to any endpoint or command yet — nothing external can trigger a logout in
+  this phase.
+- **Production durability and encryption at rest** are explicitly not
+  solved by `FileAuthStateProvider` — see docs/DECISIONS.md ADR-006 for
+  what the Phase 3 Supabase-backed provider must additionally guarantee.
+
+## What's actually enforced in code today (Phases 1-2)
 
 - Config loading never logs secret values (`src/config/config.ts`,
   `src/services/logger.ts`).
-- `.gitignore` excludes `.env` and any future local auth/media/session
-  directories.
-- The health endpoint reports real component status rather than claiming
-  integrations work before they're implemented.
+- `.gitignore` excludes `.env` and all local auth/media/session
+  directories, including the WhatsApp auth directory in active use since
+  Phase 2.
+- The health endpoint reports real component status (including the actual
+  WhatsApp connection state) rather than claiming integrations work before
+  they're implemented, and never leaks WhatsApp authentication material
+  (see above).
+- No message content is read, stored, or acted upon yet — Phase 2 only
+  establishes the connection; `handlers/`, `rules/`, `commands/`, and
+  `moderation/` still don't exist.

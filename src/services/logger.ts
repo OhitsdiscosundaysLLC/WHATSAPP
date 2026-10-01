@@ -8,7 +8,27 @@ import { config } from '../config/config';
 const options: LoggerOptions = {
   level: config.logLevel,
   redact: {
-    paths: ['*.apiKey', '*.serviceRoleKey', '*.password', '*.token', 'req.headers.authorization'],
+    paths: [
+      '*.apiKey',
+      '*.serviceRoleKey',
+      '*.password',
+      '*.token',
+      'req.headers.authorization',
+      // WhatsApp (Baileys) auth material — defense in depth. Application
+      // code never intentionally logs these objects, but Baileys' own
+      // internal logging (it uses the logger we pass it) could include
+      // them as a bound field, so they're redacted here too.
+      'creds',
+      'authState',
+      'keys',
+      'qr',
+      '*.creds',
+      '*.authState',
+      '*.keys',
+      '*.qr',
+      'authState.creds',
+      'authState.keys',
+    ],
     censor: '[REDACTED]',
   },
   base: {

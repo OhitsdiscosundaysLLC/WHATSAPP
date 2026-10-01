@@ -11,8 +11,11 @@ dist/
 .env.*.local
 
 # WhatsApp session / auth state (Phase 2+)
-auth/
-sessions/
+# Anchored to the repo root (leading slash) so this only matches the
+# top-level session-storage directory — NOT src/whatsapp/auth/, which is
+# source code, not runtime auth state.
+/auth/
+/sessions/
 .wwebjs_auth/
 .wwebjs_cache/
 

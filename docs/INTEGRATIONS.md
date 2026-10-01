@@ -1,16 +1,34 @@
 # External Integrations
 
-## WhatsApp — Baileys (`@whiskeysockets/baileys`)
+## WhatsApp — Baileys (`@whiskeysockets/baileys@^6.7.24`)
 
-See `docs/DECISIONS.md` (ADR-001) for the selection rationale and documented
-feature limitations (deletion, view-once, calls, session persistence). Not
-installed or connected in Phase 1 — introduced in Phase 2.
+See `docs/DECISIONS.md` (ADR-001, and its Phase 2 update) for the selection
+rationale, exact pinned version, and documented feature limitations
+(deletion, view-once, calls, session persistence). Connection/session
+handling landed in Phase 2 (`src/whatsapp/`); message/event processing is
+still Phase 5+.
 
-Required configuration (reserved in `.env.example`, not yet consumed):
+Configuration (read by `src/config/config.ts`):
 
-- `WHATSAPP_AUTH_DIR` — local auth-state cache directory for development.
-  Production persistence strategy is an open Phase 2 design question (see
-  ADR-001 consequences).
+- `WHATSAPP_ENABLED` — set to `false` to disable WhatsApp connectivity
+  entirely; the HTTP server still runs. Defaults to `true`.
+- `WHATSAPP_AUTH_DIR` — local auth-state cache directory, **development
+  only**. Production persistence is a durable `AuthStateProvider`
+  implementation Phase 3 must provide — see `docs/DECISIONS.md` ADR-006.
+- `WHATSAPP_RECONNECT_BASE_MS` / `WHATSAPP_RECONNECT_MAX_MS` — bounds for
+  the capped exponential backoff used on transient disconnects (see
+  `docs/ARCHITECTURE.md`).
+
+Network requirement: the process needs outbound access to
+`wss://web.whatsapp.com` (WebSocket) and WhatsApp's version-check endpoint
+(plain HTTPS, used by `fetchLatestBaileysVersion` with a 10s timeout — a
+failure there is non-fatal, Baileys falls back to its built-in default
+protocol version). A network policy that blocks either will leave the
+connection stuck in `connecting` indefinitely for the WebSocket (no
+automatic timeout/retry kicks in until the TCP/TLS handshake itself
+resolves one way or another) — this was observed in this project's own
+sandboxed development container and is an environment/network
+configuration matter, not an application bug.
 
 ## Supabase (Postgres)
 

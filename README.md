@@ -9,9 +9,11 @@ This is an original, from-scratch project. It is not a fork, clone, or
 derivative of any other WhatsApp bot — see `docs/DECISIONS.md` for the
 technical decisions behind it, made independently for this codebase.
 
-**Status: Phase 1 — project foundation only.** There is no WhatsApp
-connection, no database connection, and no AI integration yet. See
-`docs/DEVELOPMENT_PLAN.md` for the full phase roadmap.
+**Status: Phase 2 — WhatsApp connection/session foundation.** The bot can
+connect to WhatsApp (QR auth, persistent local session, reconnect handling),
+but still reads no message content and runs no automation. No database
+connection, no AI integration yet. See `docs/DEVELOPMENT_PLAN.md` for the
+full phase roadmap.
 
 ## Documentation
 
@@ -35,13 +37,30 @@ npm run dev
 
 The dev server starts an HTTP server (default `http://localhost:3000`) with:
 
-- `GET /health` — application/component status (JSON)
+- `GET /health` — liveness + component status (JSON); always `200` while
+  the process is up, even mid-reconnect
+- `GET /ready` — readiness; `200` once WhatsApp is connected (or
+  intentionally disabled), `503` otherwise
 - `GET /` — basic info
 
-Phase 1 doesn't require any of the `.env` values to be filled in to run —
-`npm run dev` starts cleanly with everything unconfigured, and `/health`
-reports `not_implemented` for the database and WhatsApp components until
-Phases 2 and 3 land.
+No `.env` values are required just to run `npm run dev` — Supabase/OpenAI
+stay unconfigured and `/health` reports `database` as `not_implemented`
+until Phase 3. WhatsApp connects automatically unless
+`WHATSAPP_ENABLED=false` is set.
+
+### First-time WhatsApp authentication
+
+1. Run `npm run dev` (or `npm start` against a build).
+2. A QR code prints to the terminal — scan it from your phone:
+   **WhatsApp → Settings → Linked Devices → Link a Device**.
+3. Once scanned, the terminal logs the connection as established and
+   `GET /health` reports `components.whatsapp.status: "connected"`.
+4. Credentials are cached under `WHATSAPP_AUTH_DIR` (default `./auth`,
+   already gitignored). Restarting the process reconnects automatically —
+   **no new QR required** — as long as that directory persists.
+
+This local-file auth storage is development-only; see
+`docs/DECISIONS.md` (ADR-006) for the production requirement.
 
 ### Scripts
 
@@ -53,24 +72,35 @@ Phases 2 and 3 land.
 | `npm run lint` / `npm run lint:fix`       | ESLint                                      |
 | `npm run format` / `npm run format:check` | Prettier                                    |
 | `npm run typecheck`                       | `tsc --noEmit`                              |
+| `npm test`                                | Run the automated test suite (vitest)       |
 
 ## Project structure
 
 ```
 src/
   index.ts            entry point: logging, server start, graceful shutdown
-  server.ts           Express app (health endpoint, future dashboard API)
+  server.ts           Express app (health/ready endpoints, future dashboard API)
   config/
     config.ts         typed, validated environment configuration
   services/
-    logger.ts          structured (pino) logging
-    healthService.ts    app/component status reporting
+    logger.ts          structured (pino) logging, with WhatsApp-auth redaction
+    healthService.ts    composes HealthReport/readiness from injected state
+  whatsapp/
+    types.ts            connection state + status types
+    client.ts            thin factory around Baileys' makeWASocket
+    connectionManager.ts  lifecycle, reconnect/backoff, logout handling
+    reconnectPolicy.ts    pure, unit-tested reconnect-decision logic
+    qrDisplay.ts          terminal QR rendering
+    whatsappService.ts    singleton wiring, used by index.ts/server.ts
+    auth/
+      authStateProvider.ts      storage-agnostic interface
+      fileAuthStateProvider.ts  local-filesystem implementation (dev only)
 docs/                  architecture, database, security, and planning docs
 ```
 
-Later phases add `whatsapp/`, `handlers/`, `rules/`, `commands/`,
-`moderation/`, and more `services/` — see `docs/ARCHITECTURE.md` for the
-full target layout and `docs/DEVELOPMENT_PLAN.md` for when each lands.
+Later phases add `handlers/`, `rules/`, `commands/`, `moderation/`, and more
+`services/` — see `docs/ARCHITECTURE.md` for the full target layout and
+`docs/DEVELOPMENT_PLAN.md` for when each lands.
 
 ## Environment variables
 

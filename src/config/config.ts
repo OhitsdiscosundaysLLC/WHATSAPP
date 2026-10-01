@@ -18,6 +18,14 @@ const envSchema = z.object({
   ADMIN_WHATSAPP_NUMBERS: z.string().optional().or(z.literal('')),
 
   WHATSAPP_AUTH_DIR: z.string().default('./auth'),
+  WHATSAPP_ENABLED: z
+    .string()
+    .optional()
+    .transform((value) =>
+      value === undefined || value === '' ? true : value.toLowerCase() === 'true',
+    ),
+  WHATSAPP_RECONNECT_BASE_MS: z.coerce.number().int().positive().default(2000),
+  WHATSAPP_RECONNECT_MAX_MS: z.coerce.number().int().positive().default(60_000),
 
   APP_VERSION: z.string().optional().or(z.literal('')),
 });
@@ -65,7 +73,10 @@ function loadConfig() {
     },
 
     whatsapp: {
+      enabled: env.WHATSAPP_ENABLED,
       authDir: env.WHATSAPP_AUTH_DIR,
+      reconnectBaseMs: env.WHATSAPP_RECONNECT_BASE_MS,
+      reconnectMaxMs: env.WHATSAPP_RECONNECT_MAX_MS,
     },
 
     authorization: {
