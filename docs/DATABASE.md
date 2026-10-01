@@ -359,8 +359,9 @@ own per-rule cooldown (a deleted message detected, a call attempted).
 
 Call handling, configured per **WhatsApp account**, not per group — an
 incoming call isn't reliably scoped to a specific monitored group the way
-messages are, and there is no per-contact/DM settings model yet (the
-`contacts` table below remains unbuilt). See docs/DECISIONS.md.
+messages are. Also carries Emergency Pause (`automation_paused`, added in
+Phase 7 below) for the same reason: pausing autonomous behavior is an
+account-wide decision, not a per-group one. See docs/DECISIONS.md.
 
 | column                | type                                     | notes                                                                 |
 | --------------------- | ---------------------------------------- | --------------------------------------------------------------------- |
@@ -368,6 +369,7 @@ messages are, and there is no per-contact/DM settings model yet (the
 | call_handling_enabled | boolean default false                    |                                                                       |
 | call_response_action  | text default 'LOG_ONLY'                  | `LOG_ONLY` \| `NOTIFY_OWNER` \| `AUTO_REJECT` \| `SEND_MESSAGE_AFTER` |
 | call_response_message | text nullable                            |                                                                       |
+| automation_paused     | boolean default false                    | Emergency Pause — see Phase 7 below                                   |
 | updated_at            | timestamptz                              |                                                                       |
 
 ### Supabase Storage: `whatsapp-media` bucket
@@ -378,6 +380,106 @@ Private (`public: false`), created by the same migration
 access model as every table in this project. The dashboard never links to
 it directly; `GET /api/groups/:id/media-archive/:mediaId/url` mints a
 60-second signed URL per authenticated request.
+
+## Implemented (Phase 7): private contacts, admin management, pause/dry-run/inbox
+
+Two migrations: `supabase/migrations/20261001200000_whatsapp_private_contacts.sql`
+(private contacts + DB-managed admins + nullable `contact_id` added to
+`group_rules`/`bot_actions`/`whatsapp_audit_logs`/`whatsapp_ai_usage`/
+`whatsapp_messages`, each with a `..._scope_check` CHECK constraint enforcing
+exactly one of `group_id`/`contact_id` set) and
+`supabase/migrations/20261001210000_whatsapp_pause_dryrun_inbox.sql`
+(`automation_paused` on `whatsapp_account_settings`, `dry_run_enabled` on
+`group_settings`/`contact_settings`, and the new `owner_inbox_items` table).
+Same RLS/id/timestamp conventions as every prior migration.
+
+### `whatsapp_contacts` / `contact_settings`
+
+Private-chat (DM) equivalent of `whatsapp_groups`/`group_settings` — a
+contact is discovered lazily on its first DM, same pattern as group
+discovery, and always starts with safe-defaults (all-off) settings. `blocked`
+is a real, hard, unconditional gate (checked before monitoring, commands, or
+rule evaluation); `allowlisted` is deliberately informational-only — a
+second behavioral gate alongside per-contact toggles would itself be a dead
+control.
+
+| column (contact_settings)                  | notes                                                               |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| private_monitoring_enabled                  | required to store messages / archive deletions for this contact      |
+| private_ai_enabled / private_auto_reply_enabled / private_ai_auto_reply_enabled / private_ai_semantic_classification_enabled | mirrors the group four-gate AI permission pattern (src/rules/ruleEngine.ts) |
+| private_deleted_message_archive_enabled      |                                                                        |
+| dry_run_enabled                             | see Phase 7's Dry Run entry below                                     |
+| custom_instructions / custom_ai_instructions | per-contact prompt context                                           |
+| ai_cooldown_seconds / ai_max_responses_per_hour / deleted_message_retention_days | same semantics as the group equivalents |
+
+### `whatsapp_admins`
+
+Dashboard-managed admin numbers, additive to (never a replacement for) the
+env-only `ADMIN_WHATSAPP_NUMBERS` — merged at authorization-check time via
+`resolveAdminNumbers()` in both command handlers. `OWNER_WHATSAPP_NUMBERS`
+has no DB-backed equivalent and never can: the owner identity is
+structurally prevented from being written by any code path, so there is no
+privilege-escalation path through the dashboard. See docs/SECURITY.md.
+
+| column     | type                                  | notes                  |
+| ---------- | ------------------------------------- | ----------------------- |
+| id         | uuid pk                               |                         |
+| account_id | uuid, fk → whatsapp_accounts, cascade |                         |
+| phone_jid  | text                                  | normalized WhatsApp JID |
+| label      | text nullable                         |                         |
+| created_at | timestamptz                           |                         |
+
+### Emergency Pause (`whatsapp_account_settings.automation_paused`)
+
+Account-level, not a cross-account singleton — the dashboard can still
+present a "pause everything" action by looping the PATCH across every
+account. Stops autonomous outbound automation: rule actions, auto-reply,
+moderation actions, and the `AUTO_REJECT`/`SEND_MESSAGE_AFTER` call
+responses. Deliberately does **not** block: monitoring/storage, owner/admin
+in-chat commands, or owner notifications (deleted-message pings,
+`NOTIFY_OWNER` call responses) — pausing stops the bot's own autonomous
+decisions, never the owner's own visibility or explicit requests. Checked in
+`src/whatsapp/events/eventPipeline.ts` (both the group and private message
+paths) and `src/whatsapp/calls/callHandler.ts`.
+
+### Dry Run (`group_settings.dry_run_enabled` / `contact_settings.dry_run_enabled`)
+
+Per-group/per-contact. The rule engine evaluates a rule exactly as it
+normally would — qualification, threshold/distinct-responder tracking,
+cooldown — but skips the real `executeAction`/`executeModerationAction`
+call. Instead it records a `bot_actions` row with `status: 'skipped'` and
+`detail.reason: 'dry_run'` plus a human-readable `detail.wouldHaveActed`
+string (e.g. `send message: "Thanks!"`), and a `rule.dry_run` /
+`moderation.dry_run` audit event instead of `rule.fired`/`moderation.fired`.
+Cooldown state (`rule_cooldowns`/`recordFired`) still advances as if the
+rule had fired, so a dry run accurately simulates what would happen on
+every subsequent evaluation too. See `src/rules/ruleEngine.ts`.
+
+### `owner_inbox_items`
+
+A human-readable "look at this" feed for the dashboard's `/inbox` page —
+distinct from the full raw `whatsapp_audit_logs`/`bot_actions` trail the
+Activity page reads (every rule evaluation, every message received). Only
+ever populated from structured data already known at the call site, never
+AI-generated guessing about what happened. See `src/db/ownerInboxRepository.ts`.
+
+| column     | type                                   | notes                                                                                                 |
+| ---------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| id         | uuid pk                                |                                                                                                        |
+| account_id | uuid, fk → whatsapp_accounts, cascade  |                                                                                                        |
+| group_id   | uuid nullable, fk, on delete cascade   |                                                                                                        |
+| contact_id | uuid nullable, fk, on delete cascade   |                                                                                                        |
+| category   | text                                   | `deleted_message` \| `missed_call` \| `moderation` \| `ai_failure` \| `disconnected` \| `automation_failure` \| `rule_fired` |
+| title      | text                                   | the human-readable headline shown on the card                                                          |
+| detail     | jsonb nullable                         |                                                                                                        |
+| read       | boolean default false                  |                                                                                                        |
+| dismissed  | boolean default false                  |                                                                                                        |
+| created_at | timestamptz                            | indexed, newest first                                                                                   |
+
+Wired at five sites: deleted messages (group + private), incoming call
+offers, a moderation action firing, and AI reply generation failures (group
++ private). Deliberately **not** wired for new-group-discovery or a generic
+automation-failure catch-all in this pass.
 
 ## Design principles
 

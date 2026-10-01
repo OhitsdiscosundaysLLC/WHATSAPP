@@ -25,6 +25,19 @@
   `authorizedRole()` checks the sender's normalized JID against both lists
   server-side; the message text itself (e.g. "this is the owner speaking")
   is never trusted.
+- **Dashboard-managed admins** (`whatsapp_admins` table, managed from the
+  `/admins` page) are additive to `ADMIN_WHATSAPP_NUMBERS`, merged at
+  authorization-check time via `resolveAdminNumbers()` in both
+  `commandHandler.ts` and `privateCommandHandler.ts`. **Owner numbers can
+  never be dashboard-managed** — `OWNER_WHATSAPP_NUMBERS` has no DB-backed
+  equivalent, no API route accepts an owner number as input, and no
+  repository method can write to it; this is a structural property, not a
+  runtime check that could be bypassed. A compromised or buggy dashboard
+  session can therefore grant illegitimate admin access at worst, never
+  owner-level trust — and the real owner can always remove an illegitimate
+  admin via the same page. Covered by `src/web/adminRoutes.test.ts` and
+  `src/whatsapp/commands/commandHandler.test.ts`'s
+  "dashboard-managed (DB) admins" tests.
 - Every other participant gets **no privileged commands** —
   `tryHandleCommand()` returns `false` (not a command at all) for a
   dot-prefixed message from an unrecognized sender, so it falls through to
@@ -54,10 +67,22 @@
 
 ## Private-chat automation is opt-in
 
-DM automation (AI replies, auto-reply, monitoring) is off by default and
-requires explicit per-contact configuration (`contacts.private_*_enabled`,
-or an `allowlisted` flag). The bot must not start responding to arbitrary
-incoming DMs just because it's connected.
+DM automation (AI replies, auto-reply, monitoring, archiving) is off by
+default and requires explicit per-contact configuration
+(`contact_settings.private_*_enabled`) — a newly-discovered contact's
+settings row is created with every toggle off, same as a newly-discovered
+group. The bot must not start responding to arbitrary incoming DMs just
+because it's connected.
+
+`contacts.blocked` is the one real, hard, unconditional gate: a blocked
+contact is excluded from monitoring, commands, and rule evaluation
+regardless of any other toggle, checked first in
+`EventPipeline.handlePrivateMessage()`. `contacts.allowlisted` is
+deliberately **not** a second permission gate — every actual capability
+already has its own explicit toggle, so a redundant "is this contact
+allowed at all" check would itself be a dead/decorative control;
+`allowlisted` exists purely as an owner-facing label (see docs/DECISIONS.md
+ADR-014).
 
 ## Prompt injection resistance (implemented — Phase 6+)
 
@@ -293,7 +318,17 @@ when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are both set
   depends on.
 - GCM's 16-byte authentication tag is verified on every decrypt;
   `decryptBuffer`/`decryptJson` throw on any tampering (ciphertext, IV, or
-  tag) rather than returning corrupted or partial plaintext.
+  tag) rather than returning corrupted or partial plaintext. Every such
+  failure (wrong key, tampered/truncated data, or a non-JSON payload after
+  a bad key) is wrapped in one typed `DecryptionError` rather than left as
+  a raw Node crypto error — `WhatsAppConnectionManager.start()` checks for
+  this specifically (`instanceof DecryptionError`) to report a clear,
+  actionable account status ("credentials are corrupted — disconnect and
+  re-pair") instead of a generic connection error, and never schedules an
+  automatic retry for it (retrying cannot fix corrupted ciphertext). This
+  failure is already isolated per account by `accountManager.startAll()`'s
+  `Promise.allSettled` + per-account `.catch()` — one account's corrupted
+  credentials cannot crash boot or affect any other account.
 - `WHATSAPP_AUTH_ENCRYPTION_KEY` is in `src/services/logger.ts`'s redact
   list (`*.encryptionKey`, `*.authEncryptionKey`), alongside `*.ciphertext`,
   so even a bound-logger field accidentally carrying one is scrubbed.
@@ -453,11 +488,27 @@ enforced:
   `src/web/activityRoutes.test.ts` (401 unauthenticated, 403 missing/wrong
   CSRF, and cross-group isolation: changing one group's settings or rules
   never affects another group's).
-- No private-chat (DM) automation exists — the event pipeline normalizes
-  and dedup-gates private messages the same as group messages, but never
-  stores them or evaluates any rule against them, and the command handler
-  only ever runs for `context === 'group'` events (see "Private-chat
-  automation is opt-in" above).
+- Private-chat (DM) automation (Phase 7) is opt-in per contact and off by
+  default, same as group automation — see "Private-chat automation is
+  opt-in" above. A `blocked` contact is excluded from monitoring, commands,
+  and rule evaluation unconditionally; `allowlisted` is never read as a
+  permission gate. Verified by `src/whatsapp/events/eventPipeline.test.ts`'s
+  "EventPipeline — private messages" tests and
+  `src/db/contactsRepository.test.ts`.
+- Emergency Pause (`whatsapp_account_settings.automation_paused`) stops
+  autonomous rule/auto-reply/moderation actions and `AUTO_REJECT`/
+  `SEND_MESSAGE_AFTER` call responses, but never blocks monitoring/storage,
+  owner/admin commands, or owner notifications — verified by
+  `src/whatsapp/events/eventPipeline.test.ts`'s pause tests and
+  `src/whatsapp/calls/callHandler.test.ts`'s pause tests (including that
+  `NOTIFY_OWNER` is explicitly unaffected).
+- Dry Run mode never performs the real send/delete/remove action while
+  enabled — `src/rules/ruleEngine.ts`'s four action-dispatch sites
+  (`response_threshold`, `auto_reply` group and private, `moderation`) all
+  check `dryRunEnabled` immediately before calling `executeAction`/
+  `executeModerationAction` and return before that call when it's on,
+  verified by dedicated dry-run tests in `src/rules/ruleEngine.test.ts` and
+  `src/rules/ruleEngine.privateAutoReply.test.ts`.
 - The OpenAI API key is read once at process start
   (`src/config/config.ts`), never logged, never sent to the browser, and
   only ever reaches `src/ai/openaiProvider.ts` — no other module imports

@@ -345,6 +345,51 @@ independent gates, and why call handling is account-scoped.
 
 Explicitly **not built** by this phase, per the product spec's own
 instruction: AI-powered moderation (moderation stays deterministic-only),
-a general (non-view-once) media archive, a global cross-group AI rate
-limit, and private-DM automation (still off by default — see "Per-group
-isolation" above).
+a general (non-view-once) media archive, and a global cross-group AI rate
+limit. (Private-DM automation itself was built in Phase 7 below — still
+opt-in and off by default, same as group automation.)
+
+**Phase 7** — private (DM) automation parity with groups, dashboard-managed
+admin accounts, a System Health page, Emergency Pause, Dry Run mode, and
+the Owner Inbox — built on the Phase 4-6+ infrastructure without reworking
+it:
+
+- `src/db/contactsRepository.ts` (`WhatsAppContact`/`ContactSettings`,
+  mirroring `GroupsRepository`), `src/db/adminsRepository.ts`
+  (dashboard-managed admins, additive to `ADMIN_WHATSAPP_NUMBERS`).
+- `RuleEngine.evaluatePrivate()`/`evaluateContactAutoReply()` — new,
+  parallel methods alongside the untouched group `evaluate()`/
+  `evaluateAutoReply()`, reusing the same classifiers/`AIService`/action
+  engine/cooldown repository.
+- `EventPipeline.handlePrivateMessage()` — the DM-side branch of
+  `handleMessage()`: lazy contact discovery, the `blocked` hard gate,
+  conditional monitoring/storage, private commands
+  (`src/whatsapp/commands/privateCommandHandler.ts`), then
+  `evaluatePrivate()`.
+- `src/db/ownerInboxRepository.ts` + `owner_inbox_items` — a
+  human-readable "look at this" feed, separate from the raw
+  `whatsapp_audit_logs`/`bot_actions` Activity trail, wired at five call
+  sites (deleted messages group+private, an incoming call offer, a
+  moderation action firing, AI reply failures group+private). New
+  dashboard page at `/inbox` (`src/web/inboxRoutes.ts`).
+- Emergency Pause (`whatsapp_account_settings.automation_paused`) — checked
+  in `EventPipeline` (both message paths) and `callHandler.ts`; stops
+  autonomous actions, never monitoring/commands/owner-notifications. Toggle
+  lives on the `/health` page per account (reusing the existing call-settings
+  endpoint).
+- Dry Run (`group_settings`/`contact_settings.dry_run_enabled`) — checked
+  at all four of `RuleEngine`'s action-dispatch sites; evaluates a rule
+  fully (qualify/threshold/cooldown) but logs "would have done X" instead
+  of calling `executeAction`/`executeModerationAction`. Toggle lives on
+  group/contact detail pages' General tab.
+- `src/db/encryption.ts` gained a typed `DecryptionError`, and
+  `WhatsAppConnectionManager.start()` reports a specific, actionable status
+  for it instead of a generic connection error (see docs/SECURITY.md).
+
+See docs/DECISIONS.md ADR-014 for the full design rationale, including why
+private contacts duplicate the group rule-firing path instead of
+generalizing it, why `allowlisted` is deliberately not a permission gate,
+and what from the broader product spec was explicitly not attempted this
+phase (Rule Simulator, Templates, Presets, Schedules, Human Takeover,
+Approval-Before-Send, Contact Tags/VIP, Escalation Rules, Risk Labels,
+Daily Summary, Analytics, Backup/Export).

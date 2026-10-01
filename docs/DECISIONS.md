@@ -937,3 +937,150 @@ automation system," not something that decides on its own when to run.
   under Part D specifically); a matching media sweep was judged
   lower-priority for this pass and is documented as unbuilt, not silently
   assumed to exist.
+
+## ADR-014: Private contacts, dashboard admin management, Emergency Pause, Dry Run, Owner Inbox, and startup safety (Phase 7)
+
+**Status:** Accepted (Phase 7)
+
+### Context
+
+The product spec's remaining scope after Phase 6+ was large: full private
+(DM) automation parity with groups, dashboard-managed admins alongside the
+env-only owner, an emergency stop for autonomous behavior, a way to test a
+rule change without risking a live send, a human-readable "look at this"
+feed distinct from the raw audit log, and a hard look at whether a single
+corrupted/invalid account record could ever break the whole app's startup.
+Given the combined scope was unrealistic to build completely and honestly
+in one pass, this phase deliberately built a well-scoped subset — each item
+fully wired, tested, and documented — rather than a broad but shallow pass
+across everything the spec named. Rule Simulator, Automation Templates,
+Group Presets, Quiet Hours/Schedules, Human Takeover, Approval-Before-Send,
+Contact Notes/Tags/VIP/Never-Automate lists, Escalation Rules, Risk Labels,
+Daily Owner Summary, Analytics dashboards, and Backup/Export were not
+attempted and are not implemented — this is stated here rather than left
+to be discovered as a gap.
+
+### Decision: private contacts duplicate the group rule-firing path rather than generalizing it
+
+`RuleEngine.evaluate()`/`evaluateAutoReply()` (group) are untouched;
+`evaluatePrivate()`/`evaluateContactAutoReply()` are new, parallel methods
+reusing the same classifiers, `AIService`, action engine, and cooldown
+repository. This duplicates several dozen lines rather than threading a
+`scope: 'group' | 'private'` parameter through the existing methods — a
+deliberate trade: the already-verified group path (live-tested by the
+owner since Phase 4+5) keeps zero risk of regression from a feature that
+only needed to reach parity, not share an implementation.
+
+### Decision: `blocked` is a hard gate; `allowlisted` is deliberately informational-only
+
+A blocked contact is excluded from monitoring, commands, and rule
+evaluation unconditionally, checked first in
+`EventPipeline.handlePrivateMessage()`. `allowlisted` was considered as a
+second "must be true to automate" gate, but every actual permission
+(monitoring, AI, auto-reply, archiving) is already its own explicit
+per-contact toggle — a redundant "is this contact allowed at all" gate
+would itself be the kind of dead/decorative control the Phase 6+ hardening
+pass was built to eliminate. `allowlisted` is kept as a label for the
+owner's own organization, not read by any runtime path.
+
+### Decision: owner stays env-only; admins become dashboard-manageable via a merge, not a replacement
+
+`OWNER_WHATSAPP_NUMBERS` cannot be written by any code path — there is no
+API route, repository method, or command that accepts an owner number as
+input. `ADMIN_WHATSAPP_NUMBERS` keeps working unchanged; a new
+`whatsapp_admins` table is additive, merged at authorization-check time via
+`resolveAdminNumbers()` in both `commandHandler.ts` and
+`privateCommandHandler.ts`. This structurally prevents a dashboard
+compromise (or bug) from escalating to owner-level trust — the worst case
+is an illegitimate admin, which the real owner can always remove.
+
+### Decision: Emergency Pause is account-scoped, and never blocks visibility or the owner's own requests
+
+Considered a single global (cross-account) kill switch; rejected because
+nothing else in this multi-account system has a cross-account-singleton
+concept, and an owner running several numbers may want to pause one without
+pausing all. Lives on `whatsapp_account_settings` (already account-scoped,
+already has a call-handling row to extend) rather than a new table.
+Checked in exactly two places: `EventPipeline` (both message paths, right
+before `ruleEngine.evaluate()`/`evaluatePrivate()`) and `callHandler.ts`
+(gating only `AUTO_REJECT`/`SEND_MESSAGE_AFTER`, never `NOTIFY_OWNER` or
+`LOG_ONLY`). Monitoring/storage, owner/admin commands, and owner
+notifications are untouched by design — "pause" means "stop the bot acting
+on its own judgement," not "stop the owner seeing or doing anything."
+
+### Decision: Dry Run still advances cooldown/threshold state
+
+The alternative — skip the entire evaluation when dry-run is on — would
+make dry run meaningless for exactly the cases an owner most wants to
+preview: "would rule X actually fire on this message, and would the
+cooldown then block the next one." So qualification, distinct-responder
+counting, and `recordFired`/cooldown state all run exactly as in the real
+path; only the final `executeAction`/`executeModerationAction` call is
+replaced with an audit entry describing what would have happened. This
+means toggling Dry Run off after testing continues from whatever cooldown
+state the dry run already produced — treated as correct, not a bug, since
+that's what a real firing would also have done.
+
+### Decision: Owner Inbox is a new table, not a filtered view over `whatsapp_audit_logs`
+
+`whatsapp_audit_logs`/`bot_actions` record every message received, every
+rule evaluation, every config change — the right data for "what exactly
+happened and when" (the Activity page), wrong for "what does the owner
+need to look at." A view/filter over the existing tables was considered
+and rejected: there is no reliable predicate over existing `event_type`/
+`action_type` values that reconstructs "worth a human look" after the
+fact, and encoding that logic as a query would silently break the moment a
+new event type is added. `owner_inbox_items` is instead explicitly
+populated at exactly five call sites (deleted messages — group and
+private, an incoming call offer, a moderation action firing, and an AI
+reply generation failure — group and private), each one choosing its own
+`category`/`title`/`detail` at the point it already has full context. New
+group discovery and a generic catch-all "automation failure" were
+considered and deliberately left out of this pass — scope, not an
+oversight.
+
+### Decision: wrap every decryption failure in one typed `DecryptionError`
+
+Investigating a known production issue (a stale test account whose stored
+credentials fail to decrypt, logged as a raw
+`TypeError: Invalid authentication tag length: 8` on every boot) found that
+`accountManager.startAll()` already isolates this correctly — each
+account's `start()` runs under `Promise.allSettled` with its own
+`.catch()`, so one corrupted account's credentials already cannot crash
+boot or affect any other account. What was missing was diagnosis: the
+failure surfaced as a generic "Failed to start WhatsApp connection," no
+different from a transient network error, giving the owner no way to tell
+"this will fix itself on retry" from "re-pairing is the only fix."
+`src/db/encryption.ts`'s `decryptBuffer`/`decryptJson` now catch every
+crypto-level failure (wrong key, tampered/truncated ciphertext or auth tag,
+non-JSON plaintext after a bad key) and rethrow as `DecryptionError`, a
+single typed error class rather than three different ways of
+string-matching Node's crypto error messages. `WhatsAppConnectionManager.start()`
+checks `instanceof DecryptionError` and reports a clear, actionable status
+("Stored credentials are corrupted or undecryptable ... disconnect and
+re-pair this account") instead, and never schedules an automatic retry for
+this specific failure — unlike a disconnect, a corrupted ciphertext cannot
+self-heal by waiting.
+
+The actual phase-3 test account
+(`6e6a5514-3f5d-4b1f-8781-dcad84290dff`) remains undeleted — attempts to
+delete it via the available tooling hang on a confirmation step that never
+resolves in this environment. The exact SQL to remove it has been given to
+the user: `delete from whatsapp_accounts where id = '6e6a5514-3f5d-4b1f-8781-dcad84290dff';`.
+This is now a cosmetic cleanup rather than a reliability risk — the
+account's broken credentials are isolated and clearly diagnosed either way.
+
+### Alternatives considered
+
+- **A single global pause flag** (not per-account): rejected, see the
+  Emergency Pause decision above.
+- **Threading a `dryRun` boolean through `executeAction`/`executeModerationAction`
+  themselves**: rejected — those functions are the one place that actually
+  performs the side effect (sending, deleting, removing); keeping the
+  branch in `ruleEngine.ts` means the action engine never needs to know
+  dry run exists at all.
+- **A generic `automation_failure` Owner Inbox category wired broadly**
+  ("anything that throws"): rejected for this pass — it would have become
+  noisy without a clear predicate for what counts, and the spec's own
+  named categories (deleted message, missed call, moderation, AI failure)
+  already cover the concrete cases this phase could fully reason about.
