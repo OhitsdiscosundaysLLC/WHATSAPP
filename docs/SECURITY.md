@@ -35,13 +35,22 @@
 - The authorization check happens **before** any command is dispatched —
   `tryHandleCommand()` is the single gate every command goes through, never
   re-implemented per command.
-- **Known limitation**: WhatsApp can present a sender as an `@lid`
-  (linked-id) JID instead of `<number>@s.whatsapp.net` for some
-  accounts/devices. Authorization compares against the
-  `@s.whatsapp.net` form only; a genuinely configured owner/admin whose
-  messages WhatsApp presents only as `@lid` will not be recognized. This is
-  a real, open gap — not resolved, documented so it isn't mistaken for
-  "commands always work for the configured numbers."
+- **`@lid` identity resolution**: WhatsApp can present a sender as an
+  `@lid` (linked-id) JID instead of `<number>@s.whatsapp.net`. Baileys
+  6.7.24 carries both forms on a message key
+  (`participantLid`/`participantPn`, `senderLid`/`senderPn`) and on group
+  participant lists (`Contact.lid`/`.jid`) whenever it knows them.
+  `src/whatsapp/identity/identityResolver.ts` tries the direct
+  `@s.whatsapp.net` JID first, then falls back to a durable
+  `whatsapp_identity_map` table (scoped per account) that is seeded
+  opportunistically — from any message carrying both forms, and in bulk
+  from group discovery's participant list. A configured owner/admin
+  number is recognized under either form as soon as WhatsApp has
+  associated the two at least once. Covered by
+  `src/whatsapp/identity/identityResolver.test.ts`. Residual limitation:
+  a sender whose `@lid`/phone pairing has never been observed by this
+  account (no prior message from them, not yet in a synced group's
+  participant list) stays unrecognized until it is.
 
 ## Private-chat automation is opt-in
 

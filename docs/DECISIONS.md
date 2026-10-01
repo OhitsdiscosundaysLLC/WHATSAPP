@@ -884,10 +884,28 @@ returns `false` (not a command) for anything not sent by a configured
 owner/admin JID, rather than replying with a rejection — a rejection would
 itself be an unrequested automated response to an unauthorized sender,
 which is exactly the behavior the rest of this phase works to prevent by
-default. A known, documented limitation: WhatsApp sometimes presents a
-sender as an `@lid` (linked-id) JID rather than
-`<number>@s.whatsapp.net`; authorization only matches the latter form —
-see docs/SECURITY.md.
+default. Authorization resolves a sender's identity through
+`src/whatsapp/identity/identityResolver.ts`, which recognizes a
+configured owner/admin number whether WhatsApp presents it as
+`<number>@s.whatsapp.net` or as an `@lid` (linked-id) JID — see
+docs/SECURITY.md.
+
+### Decision: `@lid` identity resolution uses a durable, self-healing map rather than trusting a single message
+
+Baileys 6.7.24 exposes both a sender's `@lid` and phone-number JID
+together whenever it knows both (on a message key's
+`participantLid`/`participantPn`/`senderLid`/`senderPn` fields, and on
+`groupFetchAllParticipating()`'s participant list via `Contact.lid`/
+`.jid`) — but not on every message, since WhatsApp doesn't always
+present both forms together. Resolving identity from only the current
+message would leave the common case (a message carrying `@lid` alone)
+unresolvable, so `whatsapp_identity_map` persists every
+`@lid`↔phone-number pairing this account has ever observed, scoped per
+account to prevent cross-account leakage. `resolveAuthorizedRole()`
+checks the message's own JIDs first (cheapest, no DB read needed) and
+only falls back to the durable map when the primary identity is itself
+an `@lid` — so the common, already-working case (phone-number JIDs)
+pays no extra cost.
 
 ### Decision: AI usage rate-limiting lives in its own policy module, shared by every AI call site
 
