@@ -3,6 +3,8 @@ import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditRepository } from '../db/auditRepository';
 import { FakeSupabaseClient } from '../db/fakeSupabaseClient';
+import { DEFAULT_GROUP_SETTINGS, type GroupSettings } from '../db/groupsRepository';
+import { ModerationStateRepository } from '../db/moderationStateRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import type { NormalizedMessageEvent } from '../whatsapp/events/messageNormalizer';
@@ -11,6 +13,20 @@ import { DeterministicResponseClassifier } from './classifiers/responseClassifie
 import { RuleEngine, type RuleEngineDeps } from './ruleEngine';
 
 const testLogger = pino({ level: 'silent' });
+
+/**
+ * response_threshold evaluation doesn't read group_settings at all (only
+ * src/whatsapp/events/eventPipeline.ts's bot_enabled gate does, before
+ * ever calling evaluate()) — this fixture exists purely to satisfy
+ * evaluate()'s now-required third parameter, added in Phase 6+ for
+ * auto_reply/moderation. Its exact values are irrelevant to every test in
+ * this describe block.
+ */
+const DEFAULT_SETTINGS: GroupSettings = {
+  ...DEFAULT_GROUP_SETTINGS,
+  groupId: 'group-1',
+  updatedAt: new Date().toISOString(),
+};
 
 const FIVE_PERSON_CONFIG = {
   targetMessageMatch: 'quoted' as const,
@@ -48,20 +64,35 @@ function fakeSender(): MessageSender & { sentTo: Array<{ jid: string; text: stri
   };
 }
 
+interface TestEngine {
+  evaluate(event: NormalizedMessageEvent, groupId: string, settings?: GroupSettings): Promise<void>;
+}
+
 function buildEngine(
   fake: FakeSupabaseClient,
   sender: MessageSender,
-): { engine: RuleEngine; deps: RuleEngineDeps } {
+): { engine: TestEngine; deps: RuleEngineDeps } {
   const deps: RuleEngineDeps = {
     rulesRepository: new RulesRepository(fake as unknown as SupabaseClient),
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
+    moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
     classifier: new DeterministicResponseClassifier(),
     sender,
+    moderationCapabilities: {
+      deleteMessage: vi.fn(async () => {}),
+      removeParticipant: vi.fn(async () => {}),
+    },
+    ai: undefined,
     ownerJids: [],
     logger: testLogger,
   };
-  return { engine: new RuleEngine(deps), deps };
+  const realEngine = new RuleEngine(deps);
+  const engine: TestEngine = {
+    evaluate: (event, groupId, settings = DEFAULT_SETTINGS) =>
+      realEngine.evaluate(event, groupId, settings),
+  };
+  return { engine, deps };
 }
 
 describe('RuleEngine — response_threshold ("N distinct people respond")', () => {
@@ -332,7 +363,7 @@ describe('RuleEngine — response_threshold ("N distinct people respond")', () =
       const sender = fakeSender();
 
       // ---- PROCESS A ----
-      let processA: { engine: RuleEngine; deps: RuleEngineDeps } | undefined = buildEngine(
+      let processA: { engine: TestEngine; deps: RuleEngineDeps } | undefined = buildEngine(
         fake,
         sender,
       );
@@ -474,5 +505,556 @@ describe('RuleEngine — response_threshold ("N distinct people respond")', () =
     const actions = await deps.auditRepository.listRecentActions();
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({ actionType: 'SEND_MESSAGE', status: 'success' });
+  });
+});
+
+// ---------------------------------------------------------------------
+// auto_reply (Phase 6+)
+// ---------------------------------------------------------------------
+
+function autoReplyEvent(overrides: Partial<NormalizedMessageEvent> = {}): NormalizedMessageEvent {
+  return {
+    accountId: 'acct-1',
+    chatJid: 'group@g.us',
+    context: 'group',
+    groupJid: 'group@g.us',
+    whatsappMessageId: `MSG-${Math.random().toString(36).slice(2)}`,
+    senderJid: 'sender@s.whatsapp.net',
+    fromMe: false,
+    timestamp: new Date().toISOString(),
+    messageType: 'conversation',
+    text: 'what are your hours?',
+    quotedWhatsappMessageId: undefined,
+    quotedParticipant: undefined,
+    ...overrides,
+  };
+}
+
+function settingsWith(overrides: Partial<GroupSettings>): GroupSettings {
+  return {
+    ...DEFAULT_GROUP_SETTINGS,
+    groupId: 'group-1',
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function buildFullEngine(
+  fake: FakeSupabaseClient,
+  sender: MessageSender,
+  ai: RuleEngineDeps['ai'] = undefined,
+): { engine: RuleEngine; deps: RuleEngineDeps } {
+  const deps: RuleEngineDeps = {
+    rulesRepository: new RulesRepository(fake as unknown as SupabaseClient),
+    ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
+    moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
+    auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
+    classifier: new DeterministicResponseClassifier(),
+    sender,
+    moderationCapabilities: {
+      deleteMessage: vi.fn(async () => {}),
+      removeParticipant: vi.fn(async () => {}),
+    },
+    ai,
+    ownerJids: [],
+    logger: testLogger,
+  };
+  return { engine: new RuleEngine(deps), deps };
+}
+
+describe('RuleEngine — auto_reply', () => {
+  it('does NOT reply when autoReplyEnabled is false, even with a matching deterministic rule', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(autoReplyEvent(), 'group-1', settingsWith({ autoReplyEnabled: false }));
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('replies deterministically when autoReplyEnabled is true and the message matches', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(autoReplyEvent(), 'group-1', settingsWith({ autoReplyEnabled: true }));
+    expect(sender.sentTo).toEqual([{ jid: 'group@g.us', text: 'We are open 9-5.' }]);
+  });
+
+  it('does not reply to every message just because auto-reply is on — only to qualifying ones', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent({ text: 'totally unrelated message' }),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true }),
+    );
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('respects cooldownSeconds — a second qualifying message too soon is skipped', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 3600,
+      },
+    });
+
+    const settings = settingsWith({ autoReplyEnabled: true });
+    await engine.evaluate(autoReplyEvent(), 'group-1', settings);
+    await engine.evaluate(
+      autoReplyEvent({ senderJid: 'other@s.whatsapp.net' }),
+      'group-1',
+      settings,
+    );
+    expect(sender.sentTo).toHaveLength(1);
+  });
+
+  it('an AI-classifier rule never calls AI unless ALL THREE group gates are true', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const classify = vi.fn().mockResolvedValue(true);
+    const { engine, deps } = buildFullEngine(fake, sender, {
+      service: { classify, generateReply: vi.fn() } as never,
+      usageRepository: {
+        getLastSuccessfulAt: vi.fn().mockResolvedValue(undefined),
+        countRecentSuccessful: vi.fn().mockResolvedValue(0),
+      } as never,
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'AI hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'ai', aiInstructions: 'asks about hours' },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    // Only aiEnabled true — missing aiAutoReplyEnabled and aiSemanticClassificationEnabled.
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, aiEnabled: true }),
+    );
+    expect(classify).not.toHaveBeenCalled();
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('an AI-classifier rule calls AI and replies once every gate is explicitly on', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const classify = vi.fn().mockResolvedValue(true);
+    const { engine, deps } = buildFullEngine(fake, sender, {
+      service: { classify, generateReply: vi.fn() } as never,
+      usageRepository: {
+        getLastSuccessfulAt: vi.fn().mockResolvedValue(undefined),
+        countRecentSuccessful: vi.fn().mockResolvedValue(0),
+      } as never,
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'AI hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'ai', aiInstructions: 'asks about hours' },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({
+        autoReplyEnabled: true,
+        aiEnabled: true,
+        aiAutoReplyEnabled: true,
+        aiSemanticClassificationEnabled: true,
+      }),
+    );
+    expect(classify).toHaveBeenCalled();
+    expect(sender.sentTo).toEqual([{ jid: 'group@g.us', text: 'We are open 9-5.' }]);
+  });
+
+  it('AI_REPLY action generates the reply text via AIService and sends exactly that text', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const generateReply = vi.fn().mockResolvedValue('Our hours are 9am to 5pm, Monday to Friday.');
+    const { engine, deps } = buildFullEngine(fake, sender, {
+      service: { classify: vi.fn(), generateReply } as never,
+      usageRepository: {
+        getLastSuccessfulAt: vi.fn().mockResolvedValue(undefined),
+        countRecentSuccessful: vi.fn().mockResolvedValue(0),
+      } as never,
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'AI hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'AI_REPLY' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({
+        autoReplyEnabled: true,
+        aiEnabled: true,
+        aiAutoReplyEnabled: true,
+        aiSemanticClassificationEnabled: true,
+      }),
+    );
+    expect(generateReply).toHaveBeenCalled();
+    expect(sender.sentTo).toEqual([
+      { jid: 'group@g.us', text: 'Our hours are 9am to 5pm, Monday to Friday.' },
+    ]);
+  });
+
+  it('skips (never crashes) when AI is required but OPENAI_API_KEY is not configured', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender, undefined);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'AI hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'ai', aiInstructions: 'asks about hours' },
+        action: { type: 'SEND_MESSAGE', message: 'fallback' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await expect(
+      engine.evaluate(
+        autoReplyEvent(),
+        'group-1',
+        settingsWith({
+          autoReplyEnabled: true,
+          aiEnabled: true,
+          aiAutoReplyEnabled: true,
+          aiSemanticClassificationEnabled: true,
+        }),
+      ),
+    ).resolves.not.toThrow();
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('respects the AI rate-limit policy — no AI call and no reply when the limit is hit', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const classify = vi.fn().mockResolvedValue(true);
+    const { engine, deps } = buildFullEngine(fake, sender, {
+      service: { classify, generateReply: vi.fn() } as never,
+      usageRepository: {
+        getLastSuccessfulAt: vi.fn().mockResolvedValue(undefined),
+        countRecentSuccessful: vi.fn().mockResolvedValue(10),
+      } as never,
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'AI hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'ai', aiInstructions: 'asks about hours' },
+        action: { type: 'SEND_MESSAGE', message: 'fallback' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({
+        autoReplyEnabled: true,
+        aiEnabled: true,
+        aiAutoReplyEnabled: true,
+        aiSemanticClassificationEnabled: true,
+        aiMaxResponsesPerHour: 1,
+      }),
+    );
+    expect(classify).not.toHaveBeenCalled();
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('group isolation: auto-reply enabled in one group never fires for another group’s identical rule setup', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-2',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    // Evaluate against group-1 (different group, no rule there), with auto-reply enabled.
+    await engine.evaluate(autoReplyEvent(), 'group-1', settingsWith({ autoReplyEnabled: true }));
+    expect(sender.sentTo).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// moderation (Phase 6+)
+// ---------------------------------------------------------------------
+
+function moderationEvent(overrides: Partial<NormalizedMessageEvent> = {}): NormalizedMessageEvent {
+  return {
+    accountId: 'acct-1',
+    chatJid: 'group@g.us',
+    context: 'group',
+    groupJid: 'group@g.us',
+    whatsappMessageId: `MSG-${Math.random().toString(36).slice(2)}`,
+    senderJid: 'spammer@s.whatsapp.net',
+    fromMe: false,
+    timestamp: new Date().toISOString(),
+    messageType: 'conversation',
+    text: 'this has a bad word in it',
+    quotedWhatsappMessageId: undefined,
+    quotedParticipant: undefined,
+    ...overrides,
+  };
+}
+
+describe('RuleEngine — moderation', () => {
+  it('does nothing when moderationEnabled is false (safe default)', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'WARN', message: 'Please watch your language.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(moderationEvent(), 'group-1', settingsWith({ moderationEnabled: false }));
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('WARN fires on a banned phrase when moderationEnabled is true', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'WARN', message: 'Please watch your language.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(moderationEvent(), 'group-1', settingsWith({ moderationEnabled: true }));
+    expect(sender.sentTo).toEqual([{ jid: 'group@g.us', text: 'Please watch your language.' }]);
+  });
+
+  it('DELETE_MESSAGE is never executed unless moderationDestructiveActionsEnabled is explicitly true', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'DELETE_MESSAGE' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      moderationEvent(),
+      'group-1',
+      settingsWith({ moderationEnabled: true, moderationDestructiveActionsEnabled: false }),
+    );
+    expect(deps.moderationCapabilities.deleteMessage).not.toHaveBeenCalled();
+
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+  });
+
+  it('DELETE_MESSAGE executes once moderationDestructiveActionsEnabled is true', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'DELETE_MESSAGE' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      moderationEvent(),
+      'group-1',
+      settingsWith({ moderationEnabled: true, moderationDestructiveActionsEnabled: true }),
+    );
+    expect(deps.moderationCapabilities.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('respects cooldownSeconds between fires', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'WARN', message: 'warned' },
+        cooldownSeconds: 3600,
+      },
+    });
+
+    const settings = settingsWith({ moderationEnabled: true });
+    await engine.evaluate(moderationEvent(), 'group-1', settings);
+    await engine.evaluate(
+      moderationEvent({ senderJid: 'another-spammer@s.whatsapp.net' }),
+      'group-1',
+      settings,
+    );
+    expect(sender.sentTo).toHaveLength(1);
+  });
+
+  it('records an audit trail with the violation type', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'LOG_ONLY' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(moderationEvent(), 'group-1', settingsWith({ moderationEnabled: true }));
+
+    const events = await deps.auditRepository.listRecent();
+    const firedEvent = events.find((e) => e.eventType === 'moderation.fired');
+    expect(firedEvent?.detail).toMatchObject({ violationType: 'banned_phrase' });
+  });
+
+  it('a clean message never triggers moderation', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'No bad words',
+      triggerType: 'moderation',
+      config: {
+        qualify: {
+          bannedPhrases: ['bad word'],
+          spamRepeatThreshold: 0,
+          spamWindowSeconds: 30,
+          detectLinks: false,
+        },
+        action: { type: 'WARN', message: 'warned' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      moderationEvent({ text: 'hello, nice to meet you' }),
+      'group-1',
+      settingsWith({ moderationEnabled: true }),
+    );
+    expect(sender.sentTo).toHaveLength(0);
   });
 });

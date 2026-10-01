@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 import { AuditRepository } from '../db/auditRepository';
 import { GroupsRepository, type GroupSettingsPatch } from '../db/groupsRepository';
+import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
+import { MessagesRepository } from '../db/messagesRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
 import { TRIGGER_TYPES } from '../rules/ruleConfig';
@@ -12,17 +14,36 @@ const log = createChildLogger('web:groups');
 
 const MATCH_MODES = ['contains', 'exact', 'keyword_any'] as const;
 const ACTION_TYPES = ['SEND_MESSAGE', 'NOTIFY_OWNER', 'LOG_ONLY'] as const;
+const AUTO_REPLY_ACTION_TYPES = ['SEND_MESSAGE', 'AI_REPLY'] as const;
+const MODERATION_ACTION_TYPES = [
+  'LOG_ONLY',
+  'WARN',
+  'NOTIFY_OWNER',
+  'DELETE_MESSAGE',
+  'REMOVE_USER',
+] as const;
 
-/** Friendly shape the dashboard's rule builder form submits — no raw JSON required. */
+/** Friendly shape the dashboard's rule builder forms submit — no raw JSON required. */
 interface RuleFormInput {
   name?: unknown;
+  triggerType?: unknown;
+  // response_threshold / auto_reply (deterministic)
   phrases?: unknown;
   matchMode?: unknown;
+  // auto_reply AI classifier
+  classifier?: unknown;
+  aiInstructions?: unknown;
+  // response_threshold only
   threshold?: unknown;
   cooldownSeconds?: unknown;
   actionType?: unknown;
   message?: unknown;
   enabled?: unknown;
+  // moderation
+  bannedPhrases?: unknown;
+  spamRepeatThreshold?: unknown;
+  spamWindowSeconds?: unknown;
+  detectLinks?: unknown;
 }
 
 function ruleFormToConfig(body: RuleFormInput): unknown {
@@ -46,6 +67,72 @@ function ruleFormToConfig(body: RuleFormInput): unknown {
     action,
     cooldownSeconds: Number(body.cooldownSeconds ?? 0),
   };
+}
+
+function autoReplyFormToConfig(body: RuleFormInput): unknown {
+  const useAi = body.classifier === 'ai';
+  const phrases = Array.isArray(body.phrases)
+    ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  const matchMode = MATCH_MODES.includes(body.matchMode as (typeof MATCH_MODES)[number])
+    ? body.matchMode
+    : 'contains';
+  const qualify = useAi
+    ? {
+        classifier: 'ai',
+        aiInstructions: typeof body.aiInstructions === 'string' ? body.aiInstructions : '',
+      }
+    : { classifier: 'deterministic', mode: matchMode, phrases };
+
+  const actionType = AUTO_REPLY_ACTION_TYPES.includes(
+    body.actionType as (typeof AUTO_REPLY_ACTION_TYPES)[number],
+  )
+    ? body.actionType
+    : 'SEND_MESSAGE';
+  const action =
+    actionType === 'AI_REPLY'
+      ? { type: 'AI_REPLY' }
+      : { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' };
+
+  return { qualify, action, cooldownSeconds: Number(body.cooldownSeconds ?? 0) };
+}
+
+function moderationFormToConfig(body: RuleFormInput): unknown {
+  const bannedPhrases = Array.isArray(body.bannedPhrases)
+    ? body.bannedPhrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  const actionType = MODERATION_ACTION_TYPES.includes(
+    body.actionType as (typeof MODERATION_ACTION_TYPES)[number],
+  )
+    ? body.actionType
+    : 'LOG_ONLY';
+  const action =
+    actionType === 'WARN' || actionType === 'NOTIFY_OWNER'
+      ? { type: actionType, message: typeof body.message === 'string' ? body.message : '' }
+      : { type: actionType };
+
+  return {
+    qualify: {
+      bannedPhrases,
+      spamRepeatThreshold: Number(body.spamRepeatThreshold ?? 0),
+      spamWindowSeconds: Number(body.spamWindowSeconds ?? 30),
+      detectLinks: Boolean(body.detectLinks),
+    },
+    action,
+    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+  };
+}
+
+function formToConfig(triggerType: string, body: RuleFormInput): unknown {
+  switch (triggerType) {
+    case 'auto_reply':
+      return autoReplyFormToConfig(body);
+    case 'moderation':
+      return moderationFormToConfig(body);
+    case 'response_threshold':
+    default:
+      return ruleFormToConfig(body);
+  }
 }
 
 function requireSupabase(res: Response): boolean {
@@ -140,11 +227,12 @@ export function createGroupRouter(): Router {
       patch.defaultCooldownSeconds = body.defaultCooldownSeconds;
     }
     // aiEnabled / autoReplyEnabled / deletedMessageArchiveEnabled /
-    // viewOnceHandlingEnabled / callHandlingEnabled / moderationEnabled /
-    // customAiInstructions: configuration architecture only — not wired to
-    // any behavior yet (Phase 6+). Accepting and persisting the toggle is
-    // harmless and lets the dashboard show them as configured for when
-    // those phases land, but intentionally does NOT turn on anything.
+    // viewOnceHandlingEnabled / moderationEnabled are all functional as of
+    // Phase 6+ (see src/rules/ruleEngine.ts, src/whatsapp/archive/).
+    // callHandlingEnabled is accepted here for backward compatibility but
+    // is NOT read by any behavior — call handling is configured per
+    // ACCOUNT, not per group (see GET/PATCH /api/accounts/:id/call-settings
+    // and src/db/accountSettingsRepository.ts).
     for (const key of [
       'aiEnabled',
       'autoReplyEnabled',
@@ -152,11 +240,29 @@ export function createGroupRouter(): Router {
       'viewOnceHandlingEnabled',
       'callHandlingEnabled',
       'moderationEnabled',
+      'aiAutoReplyEnabled',
+      'aiSemanticClassificationEnabled',
+      'moderationDestructiveActionsEnabled',
     ] as const) {
       if (typeof body?.[key] === 'boolean') patch[key] = body[key];
     }
     if (typeof body?.customAiInstructions === 'string') {
       patch.customAiInstructions = body.customAiInstructions;
+    }
+    if (typeof body?.aiCooldownSeconds === 'number') {
+      patch.aiCooldownSeconds = body.aiCooldownSeconds;
+    }
+    if (typeof body?.aiMaxResponsesPerHour === 'number' || body?.aiMaxResponsesPerHour === null) {
+      patch.aiMaxResponsesPerHour = body.aiMaxResponsesPerHour ?? undefined;
+    }
+    if (
+      typeof body?.deletedMessageRetentionDays === 'number' ||
+      body?.deletedMessageRetentionDays === null
+    ) {
+      patch.deletedMessageRetentionDays = body.deletedMessageRetentionDays ?? undefined;
+    }
+    if (typeof body?.mediaMaxFileSizeBytes === 'number') {
+      patch.mediaMaxFileSizeBytes = body.mediaMaxFileSizeBytes;
     }
 
     const settings = await groupsRepository.updateSettings(id, patch);
@@ -200,13 +306,18 @@ export function createGroupRouter(): Router {
       res.status(400).json({ error: 'invalid_rule', message: 'A rule name is required.' });
       return;
     }
+    const triggerType =
+      typeof body?.triggerType === 'string' &&
+      (TRIGGER_TYPES as readonly string[]).includes(body.triggerType)
+        ? body.triggerType
+        : 'response_threshold';
 
     try {
       const rule = await rulesRepository.create({
         groupId: id,
         name,
-        triggerType: 'response_threshold',
-        config: ruleFormToConfig(body ?? {}),
+        triggerType,
+        config: formToConfig(triggerType, body ?? {}),
       });
 
       const auditRepository = new AuditRepository(supabase);
@@ -245,11 +356,20 @@ export function createGroupRouter(): Router {
       const patch: { name?: string; enabled?: boolean; config?: unknown } = {};
       if (typeof body?.name === 'string' && body.name.trim()) patch.name = body.name.trim();
       if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
-      // A config-bearing field (phrases/threshold/etc.) present means the
-      // whole form was resubmitted — rebuild and validate the full config
-      // rather than trying to merge partial rule internals.
-      if (body?.phrases !== undefined || body?.threshold !== undefined) {
-        patch.config = ruleFormToConfig({ ...existing.config, ...body } as RuleFormInput);
+      // A config-bearing field present means the whole form was
+      // resubmitted — rebuild and validate the full config for this
+      // rule's own trigger_type rather than trying to merge partial rule
+      // internals (a rule's trigger_type never changes after creation).
+      if (
+        body?.phrases !== undefined ||
+        body?.threshold !== undefined ||
+        body?.bannedPhrases !== undefined ||
+        body?.aiInstructions !== undefined
+      ) {
+        patch.config = formToConfig(existing.triggerType, {
+          ...existing.config,
+          ...body,
+        } as RuleFormInput);
       }
 
       const rule = await rulesRepository.update(ruleId, patch);
@@ -276,6 +396,47 @@ export function createGroupRouter(): Router {
 
     await rulesRepository.remove(ruleId);
     res.status(200).json({ ok: true });
+  });
+
+  // Deleted-message archive (Phase 7 foundation) — safe metadata only,
+  // never WhatsApp auth/session information.
+  router.get('/:id/deleted-messages', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const messagesRepository = new MessagesRepository(getSupabaseClient());
+    const messages = await messagesRepository.listDeletedByGroup(id);
+    res.status(200).json({ messages });
+  });
+
+  // Archived media (Phase 8 foundation) — metadata only here; actual bytes
+  // are fetched via a short-lived signed URL, never a public link.
+  router.get('/:id/media-archive', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const mediaArchiveRepository = new MediaArchiveRepository(getSupabaseClient());
+    const media = await mediaArchiveRepository.listByGroup(id);
+    res.status(200).json({ media });
+  });
+
+  router.get('/:id/media-archive/:mediaId/url', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id, mediaId } = req.params as { id: string; mediaId: string };
+    const supabase = getSupabaseClient();
+    const mediaArchiveRepository = new MediaArchiveRepository(supabase);
+    const items = await mediaArchiveRepository.listByGroup(id, 500);
+    const item = items.find((m) => m.id === mediaId);
+    if (!item) {
+      res.status(404).json({ error: 'media_not_found' });
+      return;
+    }
+    const { data, error } = await supabase.storage
+      .from('whatsapp-media')
+      .createSignedUrl(item.storagePath, 60); // 60s — just long enough for the dashboard to load it
+    if (error || !data) {
+      res.status(500).json({ error: 'signing_failed' });
+      return;
+    }
+    res.status(200).json({ url: data.signedUrl });
   });
 
   return router;

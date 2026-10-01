@@ -3,6 +3,7 @@ import type {
   ConnectionState as BaileysConnectionState,
   GroupMetadata,
   MessageUpsertType,
+  WACallEvent,
   WAMessage,
   WASocket,
 } from '@whiskeysockets/baileys';
@@ -63,6 +64,14 @@ export interface ConnectionManagerOptions {
    * (`groups.upsert`/`groups.update`). See src/whatsapp/groups/groupDiscovery.ts.
    */
   onGroupsDiscovered?: (groups: DiscoveredGroup[]) => void;
+  /**
+   * Fired for every raw Baileys `call` event (Phase 9) — offer, ringing,
+   * reject, accept, timeout, terminate. Signaling metadata only; Baileys
+   * does not implement WebRTC media handling, so there is no audio/video
+   * to fan out (see docs/DECISIONS.md ADR-001). See
+   * src/whatsapp/calls/callHandler.ts.
+   */
+  onCall?: (call: WACallEvent) => void;
 }
 
 /**
@@ -83,6 +92,7 @@ export class WhatsAppConnectionManager {
   private readonly inactivityWatchdogMs: number;
   private readonly onMessage: ConnectionManagerOptions['onMessage'];
   private readonly onGroupsDiscovered: ConnectionManagerOptions['onGroupsDiscovered'];
+  private readonly onCall: ConnectionManagerOptions['onCall'];
 
   private socket: WASocket | null = null;
   private state: WhatsAppConnectionState = 'disabled';
@@ -110,6 +120,7 @@ export class WhatsAppConnectionManager {
     this.inactivityWatchdogMs = options.inactivityWatchdogMs ?? 45_000;
     this.onMessage = options.onMessage;
     this.onGroupsDiscovered = options.onGroupsDiscovered;
+    this.onCall = options.onCall;
   }
 
   getStatus(): WhatsAppStatus {
@@ -259,6 +270,17 @@ export class WhatsAppConnectionManager {
       // what changed; entries missing either are skipped rather than
       // guessed at.
       this.emitDiscoveredGroups(partials);
+    });
+
+    socket.ev.on('call', (calls) => {
+      if (!this.onCall) return;
+      for (const call of calls) {
+        try {
+          this.onCall(call);
+        } catch (err) {
+          this.logger.error({ err }, 'onCall handler threw');
+        }
+      }
     });
   }
 
@@ -465,6 +487,66 @@ export class WhatsAppConnectionManager {
       throw new Error('Cannot send a WhatsApp message: this account is not currently connected');
     }
     await this.socket.sendMessage(jid, { text });
+  }
+
+  /**
+   * Deletes a message "for everyone" by sending Baileys' revoke protocol
+   * message (`sendMessage(jid, { delete: key })` — verified against the
+   * installed @whiskeysockets/baileys 6.7.24 types). WhatsApp itself
+   * enforces who may delete what: the connected account can always delete
+   * its own messages, and can delete another participant's message only
+   * if it holds group-admin permissions — a permission failure surfaces
+   * as a thrown error here, never a silent no-op. Only reachable from
+   * moderation rule execution (src/rules/moderation/moderationActionEngine.ts),
+   * itself gated by `moderation_destructive_actions_enabled`.
+   */
+  async deleteMessage(key: {
+    remoteJid: string;
+    id: string;
+    participant: string | undefined;
+    fromMe: boolean;
+  }): Promise<void> {
+    if (!this.socket || this.state !== 'connected') {
+      throw new Error('Cannot delete a WhatsApp message: this account is not currently connected');
+    }
+    await this.socket.sendMessage(key.remoteJid, {
+      delete: {
+        remoteJid: key.remoteJid,
+        id: key.id,
+        fromMe: key.fromMe,
+        ...(key.participant ? { participant: key.participant } : {}),
+      },
+    });
+  }
+
+  /**
+   * Removes a participant from a group (`groupParticipantsUpdate(jid,
+   * [participantJid], 'remove')` — verified against the installed
+   * Baileys types' `ParticipantAction` union). Requires the connected
+   * account to hold group-admin permissions; WhatsApp enforces this
+   * server-side and a failure surfaces as a thrown error. Only reachable
+   * from moderation rule execution, gated by
+   * `moderation_destructive_actions_enabled`.
+   */
+  async removeParticipant(groupJid: string, participantJid: string): Promise<void> {
+    if (!this.socket || this.state !== 'connected') {
+      throw new Error('Cannot remove a participant: this account is not currently connected');
+    }
+    await this.socket.groupParticipantsUpdate(groupJid, [participantJid], 'remove');
+  }
+
+  /**
+   * Rejects an incoming call (`rejectCall(callId, callFrom)` — verified
+   * against the installed Baileys types). Used for the `AUTO_REJECT`
+   * call-response action (src/whatsapp/calls/callHandler.ts). Baileys
+   * does not implement WebRTC media handling, so there is no "answer" or
+   * audio capability to expose — only reject.
+   */
+  async rejectCall(callId: string, callFrom: string): Promise<void> {
+    if (!this.socket) {
+      throw new Error('Cannot reject a call: no active WhatsApp connection');
+    }
+    await this.socket.rejectCall(callId, callFrom);
   }
 
   /**

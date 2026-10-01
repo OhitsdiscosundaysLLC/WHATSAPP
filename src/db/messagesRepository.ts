@@ -38,6 +38,33 @@ export class MessagesRepository {
     throw new Error(`Failed to record processed WhatsApp event: ${error.message}`);
   }
 
+  /**
+   * Marks a previously-stored message as deleted (WhatsApp "delete for
+   * everyone" / revocation — see docs/DECISIONS.md ADR-001 on why "delete
+   * for me" can never reach this method at all). Returns `true` if a
+   * matching row was found and updated, `false` if this message was never
+   * stored (e.g. monitoring was off when it originally arrived, or it
+   * arrived before this account was connected) — callers should not treat
+   * `false` as an error, just as "nothing to archive."
+   */
+  async markDeleted(
+    accountId: string,
+    chatJid: string,
+    whatsappMessageId: string,
+  ): Promise<boolean> {
+    const { data, error } = await this.supabase
+      .from('whatsapp_messages')
+      .update({ deleted: true, deleted_at: new Date().toISOString() })
+      .eq('account_id', accountId)
+      .eq('chat_jid', chatJid)
+      .eq('whatsapp_message_id', whatsappMessageId)
+      .select('id');
+    if (error) {
+      throw new Error(`Failed to mark WhatsApp message deleted: ${error.message}`);
+    }
+    return Array.isArray(data) && data.length > 0;
+  }
+
   /** Stores a normalized message — only call this when the group's monitoring is enabled. */
   async store(event: NormalizedMessageEvent, groupId: string | undefined): Promise<void> {
     const { error } = await this.supabase.from('whatsapp_messages').insert({
@@ -60,4 +87,60 @@ export class MessagesRepository {
       throw new Error(`Failed to store WhatsApp message: ${error.message}`);
     }
   }
+
+  /** Recently deleted (archived) messages for a group — the dashboard's Deleted Messages view. */
+  async listDeletedByGroup(groupId: string, limit = 50): Promise<DeletedMessageRecord[]> {
+    const { data, error } = await this.supabase
+      .from('whatsapp_messages')
+      .select('id, sender_jid, message_type, text_content, created_at, deleted_at')
+      .eq('group_id', groupId)
+      .eq('deleted', true)
+      .order('deleted_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      throw new Error(`Failed to list deleted WhatsApp messages: ${error.message}`);
+    }
+    return (data ?? []).map((row) => {
+      const r = row as {
+        id: string;
+        sender_jid: string;
+        message_type: string;
+        text_content: string | null;
+        created_at: string;
+        deleted_at: string | null;
+      };
+      return {
+        id: r.id,
+        senderJid: r.sender_jid,
+        messageType: r.message_type,
+        textContent: r.text_content ?? undefined,
+        createdAt: r.created_at,
+        deletedAt: r.deleted_at ?? undefined,
+      };
+    });
+  }
+
+  /** Purges archived text content for deleted messages past a group's retention window. Never deletes the row itself (deletion metadata/audit value stays). */
+  async purgeExpiredDeletedContent(groupId: string, olderThan: Date): Promise<number> {
+    const { data, error } = await this.supabase
+      .from('whatsapp_messages')
+      .update({ text_content: null })
+      .eq('group_id', groupId)
+      .eq('deleted', true)
+      .lte('deleted_at', olderThan.toISOString())
+      .select('id');
+    if (error) {
+      throw new Error(`Failed to purge expired deleted-message content: ${error.message}`);
+    }
+    return Array.isArray(data) ? data.length : 0;
+  }
+}
+
+export interface DeletedMessageRecord {
+  id: string;
+  senderJid: string;
+  messageType: string;
+  textContent: string | undefined;
+  createdAt: string;
+  deletedAt: string | undefined;
 }

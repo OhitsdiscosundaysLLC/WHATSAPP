@@ -1,9 +1,17 @@
 import { randomUUID } from 'crypto';
 import path from 'path';
+import { AIService } from '../ai/aiService';
+import { OpenAIProvider } from '../ai/openaiProvider';
 import { config } from '../config/config';
+import { AccountSettingsRepository } from '../db/accountSettingsRepository';
+import { AiUsageRepository } from '../db/aiUsageRepository';
 import { AuditRepository } from '../db/auditRepository';
+import { CallEventsRepository } from '../db/callEventsRepository';
 import { GroupsRepository } from '../db/groupsRepository';
+import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
 import { MessagesRepository } from '../db/messagesRepository';
+import { ModerationStateRepository } from '../db/moderationStateRepository';
+import { NotificationCooldownRepository } from '../db/notificationCooldownRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import { getSupabaseClient } from '../db/supabaseClient';
@@ -14,6 +22,7 @@ import { type AccountStore, JsonManifestAccountStore, SupabaseAccountStore } fro
 import { FileAuthStateProvider } from './auth/fileAuthStateProvider';
 import { SupabaseAuthStateProvider } from './auth/supabaseAuthStateProvider';
 import { resolveAuthStorageMode, type AuthStorageMode } from './authStorageMode';
+import { handleCallEvent } from './calls/callHandler';
 import { WhatsAppConnectionManager, type ConnectionManagerOptions } from './connectionManager';
 import { EventPipeline } from './events/eventPipeline';
 import { handleDiscoveredGroups } from './groups/groupDiscovery';
@@ -21,7 +30,7 @@ import type { PairingListener, PairingSnapshot, WhatsAppStatus } from './types';
 
 const log = createChildLogger('whatsapp:accounts');
 
-/** OWNER_WHATSAPP_NUMBERS, formatted as WhatsApp JIDs for NOTIFY_OWNER. */
+/** OWNER_WHATSAPP_NUMBERS, formatted as WhatsApp JIDs for NOTIFY_OWNER/call notifications. */
 function ownerJids(): string[] {
   return config.authorization.ownerNumbers.map((number) => `${number}@s.whatsapp.net`);
 }
@@ -283,27 +292,67 @@ export class AccountManager {
 
     let onMessage: ConnectionManagerOptions['onMessage'];
     let onGroupsDiscovered: ConnectionManagerOptions['onGroupsDiscovered'];
+    let onCall: ConnectionManagerOptions['onCall'];
 
-    // The Phase 4+5 event pipeline / group discovery / rule engine are
-    // Supabase-only (same reasoning as the Phase 3 auth/account storage
-    // split — see ADR-011/ADR-012): there is no local-file equivalent for
-    // groups, messages, or rules, so this wiring simply doesn't exist in
-    // local-dev (file-storage) mode. The dashboard's Groups/Activity pages
-    // explain this plainly rather than silently doing nothing.
+    // The Phase 4+5(+6) event pipeline / group discovery / rule engine /
+    // AI / commands / archive / calls / moderation are all Supabase-only
+    // (same reasoning as the Phase 3 auth/account storage split — see
+    // ADR-011/ADR-012): there is no local-file equivalent for groups,
+    // messages, rules, or any of this phase's new tables, so this wiring
+    // simply doesn't exist in local-dev (file-storage) mode. The
+    // dashboard's Groups/Activity pages explain this plainly rather than
+    // silently doing nothing.
     if (this.storageMode?.kind === 'supabase') {
       const supabase = getSupabaseClient();
       const groupsRepository = new GroupsRepository(supabase);
       const messagesRepository = new MessagesRepository(supabase);
       const rulesRepository = new RulesRepository(supabase);
       const ruleStateRepository = new RuleStateRepository(supabase);
+      const moderationStateRepository = new ModerationStateRepository(supabase);
       const auditRepository = new AuditRepository(supabase);
+      const aiUsageRepository = new AiUsageRepository(supabase);
+      const mediaArchiveRepository = new MediaArchiveRepository(supabase);
+      const callEventsRepository = new CallEventsRepository(supabase);
+      const accountSettingsRepository = new AccountSettingsRepository(supabase);
+      const notificationCooldowns = new NotificationCooldownRepository(supabase);
+
+      const sender = {
+        sendTextMessage: (jid: string, text: string) => manager.sendTextMessage(jid, text),
+      };
+      const moderationCapabilities = {
+        deleteMessage: (key: Parameters<WhatsAppConnectionManager['deleteMessage']>[0]) =>
+          manager.deleteMessage(key),
+        removeParticipant: (groupJid: string, participantJid: string) =>
+          manager.removeParticipant(groupJid, participantJid),
+      };
+
+      // AI is a TOOL, constructed once per account and injected everywhere
+      // it's needed (rule engine, .ai command) — never called unless an
+      // explicit permission gate upstream (group ai_enabled + a specific
+      // trigger) says so. undefined when OPENAI_API_KEY isn't configured;
+      // every AI-dependent branch fails closed, never crashes. See
+      // docs/DECISIONS.md and src/ai/aiService.ts.
+      const ai =
+        config.openai.configured && config.openai.apiKey
+          ? {
+              service: new AIService(
+                new OpenAIProvider(config.openai.apiKey, config.openai.model),
+                aiUsageRepository,
+                createChildLogger(`whatsapp:account:${accountId}:ai`),
+              ),
+              usageRepository: aiUsageRepository,
+            }
+          : undefined;
 
       const ruleEngine = new RuleEngine({
         rulesRepository,
         ruleStateRepository,
+        moderationStateRepository,
         auditRepository,
         classifier: new DeterministicResponseClassifier(),
-        sender: { sendTextMessage: (jid, text) => manager.sendTextMessage(jid, text) },
+        sender,
+        moderationCapabilities,
+        ai,
         ownerJids: ownerJids(),
         logger: createChildLogger(`whatsapp:account:${accountId}:rules`),
       });
@@ -314,6 +363,31 @@ export class AccountManager {
         messagesRepository,
         ruleEngine,
         auditRepository,
+        deletedMessageHandlerDeps: {
+          groupsRepository,
+          messagesRepository,
+          auditRepository,
+          notificationCooldowns,
+          sender,
+          ownerJids: ownerJids(),
+          logger: createChildLogger(`whatsapp:account:${accountId}:deleted`),
+        },
+        viewOnceHandlerDeps: {
+          supabase,
+          mediaArchiveRepository,
+          auditRepository,
+          logger: createChildLogger(`whatsapp:account:${accountId}:media`),
+        },
+        commandHandlerDeps: {
+          groupsRepository,
+          rulesRepository,
+          auditRepository,
+          sender,
+          ai,
+          ownerNumbers: config.authorization.ownerNumbers,
+          adminNumbers: config.authorization.adminNumbers,
+          logger: createChildLogger(`whatsapp:account:${accountId}:commands`),
+        },
         logger: createChildLogger(`whatsapp:account:${accountId}:events`),
       });
 
@@ -330,6 +404,20 @@ export class AccountManager {
           log.error({ err, accountId }, 'Failed to record discovered WhatsApp groups'),
         );
       };
+
+      onCall = (call) => {
+        handleCallEvent(call, {
+          accountId,
+          accountSettingsRepository,
+          callEventsRepository,
+          auditRepository,
+          notificationCooldowns,
+          sender,
+          connection: { rejectCall: (callId, callFrom) => manager.rejectCall(callId, callFrom) },
+          ownerJids: ownerJids(),
+          logger: createChildLogger(`whatsapp:account:${accountId}:calls`),
+        }).catch((err: unknown) => log.error({ err, accountId }, 'Failed to process call event'));
+      };
     }
 
     manager = new WhatsAppConnectionManager({
@@ -341,6 +429,7 @@ export class AccountManager {
       },
       ...(onMessage ? { onMessage } : {}),
       ...(onGroupsDiscovered ? { onGroupsDiscovered } : {}),
+      ...(onCall ? { onCall } : {}),
     });
 
     manager.onUpdate((snapshot) => {

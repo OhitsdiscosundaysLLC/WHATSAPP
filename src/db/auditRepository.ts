@@ -1,7 +1,14 @@
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-export type ActionType = 'SEND_MESSAGE' | 'LOG_ONLY' | 'NOTIFY_OWNER';
+export type ActionType =
+  | 'SEND_MESSAGE'
+  | 'LOG_ONLY'
+  | 'NOTIFY_OWNER'
+  | 'AI_REPLY'
+  | 'WARN'
+  | 'DELETE_MESSAGE'
+  | 'REMOVE_USER';
 export type ActionStatus = 'success' | 'failed' | 'skipped';
 
 export interface RecordActionInput {

@@ -4,6 +4,17 @@ import type { AuditRepository } from '../../db/auditRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
 import type { RuleEngine } from '../../rules/ruleEngine';
+import {
+  extractRevokedKey,
+  handleDeletedMessage,
+  type DeletedMessageHandlerDeps,
+} from '../archive/deletedMessageHandler';
+import {
+  handleViewOnceMessage,
+  isViewOnceMessageType,
+  type ViewOnceHandlerDeps,
+} from '../archive/viewOnceHandler';
+import { tryHandleCommand, type CommandHandlerDeps } from '../commands/commandHandler';
 import { normalizeMessage } from './messageNormalizer';
 
 export interface EventPipelineDeps {
@@ -12,6 +23,10 @@ export interface EventPipelineDeps {
   messagesRepository: MessagesRepository;
   ruleEngine: RuleEngine;
   auditRepository: AuditRepository;
+  /** `undefined` only in contexts with no Supabase/account wiring at all — never in production (see accountManager.ts). */
+  deletedMessageHandlerDeps: Omit<DeletedMessageHandlerDeps, 'accountId'>;
+  viewOnceHandlerDeps: Omit<ViewOnceHandlerDeps, 'accountId'>;
+  commandHandlerDeps: CommandHandlerDeps;
   logger: Logger;
 }
 
@@ -52,6 +67,25 @@ export class EventPipeline {
     // Never treat the bot's own outgoing message as an incoming trigger.
     if (event.fromMe) return;
 
+    // WhatsApp's "delete for everyone" signal — a protocolMessage carrying
+    // the original message's key, legitimately delivered through the same
+    // messages.upsert path as any other message (see
+    // src/whatsapp/archive/deletedMessageHandler.ts). Never a normal
+    // message in its own right — handled and done, nothing else to store
+    // or evaluate for it.
+    const revokedKey = extractRevokedKey(waMessage);
+    if (revokedKey) {
+      if (event.context === 'group' && event.groupJid) {
+        await handleDeletedMessage(revokedKey, event.groupJid, {
+          accountId: this.deps.accountId,
+          ...this.deps.deletedMessageHandlerDeps,
+        }).catch((err: unknown) =>
+          this.deps.logger.error({ err }, 'Failed to process deleted-message event'),
+        );
+      }
+      return;
+    }
+
     // Private-chat automation is explicitly out of scope / off by default
     // in this phase (see product spec #6) — normalized and dedup-gated
     // above, but nothing further happens for a private-chat message yet.
@@ -76,6 +110,36 @@ export class EventPipeline {
       await this.deps.messagesRepository.store(event, group.id);
     }
 
+    if (isViewOnceMessageType(event.messageType)) {
+      await handleViewOnceMessage(
+        waMessage,
+        event.whatsappMessageId,
+        event.senderJid,
+        group,
+        settings,
+        {
+          accountId: this.deps.accountId,
+          ...this.deps.viewOnceHandlerDeps,
+        },
+      ).catch((err: unknown) =>
+        this.deps.logger.error({ err }, 'Failed to process view-once media'),
+      );
+    }
+
+    // Owner/admin in-chat commands run independent of bot_enabled — ".bot
+    // on" must work even while the bot is off (product spec Part C).
+    // Never reachable by a non-owner/admin sender — see
+    // src/whatsapp/commands/commandHandler.ts.
+    const handledAsCommand = await tryHandleCommand(
+      event,
+      group,
+      this.deps.commandHandlerDeps,
+    ).catch((err: unknown) => {
+      this.deps.logger.error({ err }, 'Command handling threw');
+      return false;
+    });
+    if (handledAsCommand) return;
+
     if (!settings.botEnabled) return;
 
     await this.deps.auditRepository.recordEvent({
@@ -85,6 +149,6 @@ export class EventPipeline {
       detail: { messageType: event.messageType, hasQuote: Boolean(event.quotedWhatsappMessageId) },
     });
 
-    await this.deps.ruleEngine.evaluate(event, group.id);
+    await this.deps.ruleEngine.evaluate(event, group.id, settings);
   }
 }

@@ -1,0 +1,45 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { describe, expect, it } from 'vitest';
+import { AccountSettingsRepository } from './accountSettingsRepository';
+import { FakeSupabaseClient } from './fakeSupabaseClient';
+
+function repo(): AccountSettingsRepository {
+  return new AccountSettingsRepository(new FakeSupabaseClient() as unknown as SupabaseClient);
+}
+
+describe('AccountSettingsRepository', () => {
+  it('ensure() creates safe defaults (call handling off, LOG_ONLY) for a new account', async () => {
+    const r = repo();
+    const settings = await r.ensure('acct-1');
+    expect(settings.callHandlingEnabled).toBe(false);
+    expect(settings.callResponseAction).toBe('LOG_ONLY');
+    expect(settings.callResponseMessage).toBeUndefined();
+  });
+
+  it('ensure() is idempotent — calling twice returns the same row, not a reset', async () => {
+    const r = repo();
+    await r.update(await (await r.ensure('acct-1')).accountId, {});
+    await r.update('acct-1', { callHandlingEnabled: true, callResponseAction: 'AUTO_REJECT' });
+    const again = await r.ensure('acct-1');
+    expect(again.callHandlingEnabled).toBe(true);
+    expect(again.callResponseAction).toBe('AUTO_REJECT');
+  });
+
+  it('update() only changes the fields provided', async () => {
+    const r = repo();
+    await r.ensure('acct-1');
+    await r.update('acct-1', { callHandlingEnabled: true });
+    const settings = await r.get('acct-1');
+    expect(settings?.callHandlingEnabled).toBe(true);
+    expect(settings?.callResponseAction).toBe('LOG_ONLY');
+  });
+
+  it('settings for one account never affect another', async () => {
+    const r = repo();
+    await r.ensure('acct-1');
+    await r.ensure('acct-2');
+    await r.update('acct-1', { callHandlingEnabled: true });
+    const acct2 = await r.get('acct-2');
+    expect(acct2?.callHandlingEnabled).toBe(false);
+  });
+});

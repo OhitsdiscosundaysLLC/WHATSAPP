@@ -1,18 +1,21 @@
 # Database Design (Supabase / Postgres)
 
-**Status:** the two "Implemented" sections below are real and live —
+**Status:** the three "Implemented" sections below are real and live —
 Phase 3 (WhatsApp account + auth-state persistence,
-`supabase/migrations/20261001120000_whatsapp_core.sql`) and Phase 4+5
+`supabase/migrations/20261001120000_whatsapp_core.sql`), Phase 4+5
 (event pipeline, group config, rule engine,
-`supabase/migrations/20261001140000_whatsapp_groups_rules.sql`).
-"Minimum viable schema (target for Phase 6+)" further down is still a
-design reference for genuinely unbuilt pieces (owner/admin identity beyond
-the `OWNER_WHATSAPP_NUMBERS` env var, private-contact settings, call
-events, AI usage accounting) — no migration exists for those yet, and the
-groups/rules/messages/bot_actions/audit_logs entries there are superseded
-by the real schema (see the Phase 4+5 section's note). This document exists
-so later phases build toward a consistent schema instead of improvising
-table-by-table.
+`supabase/migrations/20261001140000_whatsapp_groups_rules.sql`), and
+Phase 6+ (AI, auto-reply, commands, deleted-message/view-once archive,
+calls, moderation, `supabase/migrations/20261001160000_whatsapp_ai_commands_moderation.sql`).
+"Minimum viable schema (historical sketch)" further down is **fully
+superseded** now — owner/admin identity still uses the
+`OWNER_WHATSAPP_NUMBERS`/`ADMIN_WHATSAPP_NUMBERS` env vars (no `admins`
+table was built), and private-contact settings remain genuinely unbuilt,
+but every other sketch there (`groups`, `group_settings`, `group_rules`,
+`messages`, `call_events`, `bot_actions`, `ai_usage`, `audit_logs`) has a
+real, differently-shaped implementation documented above it in this file.
+This document exists so later phases build toward a consistent schema
+instead of improvising table-by-table.
 
 ## Implemented (Phase 3): WhatsApp account + auth-state persistence
 
@@ -127,21 +130,28 @@ docs/DECISIONS.md ADR-012 on safe defaults. Columns beyond
 features not yet implemented (Phase 6+) — accepted and persisted by the
 dashboard, but not read by any behavior yet.
 
-| column                          | type                             | notes                                                            |
-| ------------------------------- | -------------------------------- | ---------------------------------------------------------------- |
-| group_id                        | uuid pk, fk → whatsapp_groups.id |                                                                  |
-| bot_enabled                     | boolean default false            | master switch — gates rule evaluation                            |
-| monitoring_enabled              | boolean default false            | gates whatsapp_messages storage                                  |
-| ai_enabled                      | boolean default false            | not yet read by any feature                                      |
-| auto_reply_enabled              | boolean default false            | not yet read by any feature                                      |
-| deleted_message_archive_enabled | boolean default false            | not yet read by any feature                                      |
-| view_once_handling_enabled      | boolean default false            | not yet read by any feature                                      |
-| call_handling_enabled           | boolean default false            | not yet read by any feature                                      |
-| moderation_enabled              | boolean default false            | not yet read by any feature                                      |
-| custom_group_instructions       | text nullable                    | stored, not yet read                                             |
-| custom_ai_instructions          | text nullable                    | stored, not yet read                                             |
-| default_cooldown_seconds        | integer default 0                | reserved; per-rule cooldownSeconds is what's actually used today |
-| updated_at                      | timestamptz                      |                                                                  |
+| column                                 | type                             | notes                                                                                                                   |
+| -------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| group_id                               | uuid pk, fk → whatsapp_groups.id |                                                                                                                         |
+| bot_enabled                            | boolean default false            | master switch — gates rule evaluation                                                                                   |
+| monitoring_enabled                     | boolean default false            | gates whatsapp_messages storage                                                                                         |
+| ai_enabled                             | boolean default false            | Phase 6+: one of three gates for AI-powered auto-reply/classify                                                         |
+| auto_reply_enabled                     | boolean default false            | Phase 6+: gates auto_reply rule evaluation                                                                              |
+| deleted_message_archive_enabled        | boolean default false            | Phase 6+: gates deleted-message (REVOKE) archiving                                                                      |
+| view_once_handling_enabled             | boolean default false            | Phase 6+: gates view-once media archiving                                                                               |
+| call_handling_enabled                  | boolean default false            | accepted for backward compatibility, not read — calls are configured per-ACCOUNT, see `whatsapp_account_settings` below |
+| moderation_enabled                     | boolean default false            | Phase 6+: gates moderation rule evaluation                                                                              |
+| custom_group_instructions              | text nullable                    | Phase 6+: fed into AI-generated-reply prompts as owner config                                                           |
+| custom_ai_instructions                 | text nullable                    | Phase 6+: fed into AI-generated-reply prompts as owner config                                                           |
+| default_cooldown_seconds               | integer default 0                | reserved; per-rule cooldownSeconds is what's actually used today                                                        |
+| ai_auto_reply_enabled                  | boolean default false            | Phase 6+: 2nd of three AI-auto-reply gates                                                                              |
+| ai_semantic_classification_enabled     | boolean default false            | Phase 6+: 3rd of three AI-auto-reply gates — also gates AI classification in general                                    |
+| ai_cooldown_seconds                    | integer default 0                | Phase 6+: min seconds between successful AI calls for this group                                                        |
+| ai_max_responses_per_hour              | integer nullable                 | Phase 6+: null = unlimited                                                                                              |
+| deleted_message_retention_days         | integer nullable                 | Phase 6+: null = keep forever; else 7/30/90-style purge window                                                          |
+| media_max_file_size_bytes              | bigint default 16777216          | Phase 6+: view-once/media size limit, checked before download                                                           |
+| moderation_destructive_actions_enabled | boolean default false            | Phase 6+: separate explicit gate — DELETE_MESSAGE/REMOVE_USER are skipped unless this is true                           |
+| updated_at                             | timestamptz                      |                                                                                                                         |
 
 ### `whatsapp_processed_events`
 
@@ -253,6 +263,121 @@ collided with it) — see docs/DECISIONS.md ADR-012.
 | event_type            | text                                  | e.g. `rule.threshold_progress`, `rule.fired`, `config.changed` |
 | detail                | jsonb nullable                        | never credentials/keys/raw payloads — see docs/SECURITY.md     |
 | created_at            | timestamptz                           | indexed, and indexed with group_id                             |
+
+## Implemented (Phase 6+): AI, auto-reply, commands, archive, calls, moderation
+
+Six new tables plus the `group_settings` extensions documented above,
+applied via `supabase/migrations/20261001160000_whatsapp_ai_commands_moderation.sql`.
+Same conventions as every prior migration: RLS enabled with no
+anon/authenticated policies, `created_at`/`updated_at` set by application
+code, ids generated client-side. Checked against `information_schema` for
+collisions with this Supabase project's pre-existing tables before being
+applied (the `audit_logs` collision from Phase 4+5 — see ADR-012 — made
+this a standing practice, not a one-off).
+
+### `whatsapp_ai_usage`
+
+Every AI service call, successful or not — the source of truth for the
+per-group AI cooldown/rate-limit policy (`src/ai/aiUsagePolicy.ts`) and for
+auditing "why did the bot call OpenAI." Never stores prompt/response text.
+
+| column                            | type                                  | notes                                           |
+| --------------------------------- | ------------------------------------- | ----------------------------------------------- |
+| id                                | uuid pk                               |                                                 |
+| account_id                        | uuid, fk → whatsapp_accounts, cascade |                                                 |
+| group_id / rule_id                | uuid nullable, fk, on delete set null |                                                 |
+| reason                            | text                                  | e.g. `auto_reply_classify`, `command_ai_ask`    |
+| model                             | text                                  |                                                 |
+| prompt_tokens / completion_tokens | integer nullable                      |                                                 |
+| latency_ms                        | integer nullable                      |                                                 |
+| success                           | boolean                               |                                                 |
+| error                             | text nullable                         | short message only, never a full stack/response |
+| created_at                        | timestamptz                           | indexed with group_id and with account_id       |
+
+### `whatsapp_media_archive`
+
+Metadata for archived media (view-once today; general archiving is
+reserved). The bytes live in the private `whatsapp-media` Supabase Storage
+bucket (`public: false`, no anonymous policies), never in a Postgres
+column — see `src/whatsapp/archive/viewOnceHandler.ts`.
+
+| column                  | type                                  | notes                                                                          |
+| ----------------------- | ------------------------------------- | ------------------------------------------------------------------------------ |
+| id                      | uuid pk                               |                                                                                |
+| account_id              | uuid, fk → whatsapp_accounts, cascade |                                                                                |
+| group_id                | uuid nullable, fk, on delete set null |                                                                                |
+| whatsapp_message_id     | text                                  |                                                                                |
+| sender_jid              | text                                  |                                                                                |
+| is_view_once            | boolean default false                 |                                                                                |
+| storage_path            | text                                  | path within `whatsapp-media`                                                   |
+| mime_type               | text                                  |                                                                                |
+| file_size_bytes         | bigint                                |                                                                                |
+| sha256                  | text nullable                         |                                                                                |
+| created_at / expires_at | timestamptz / timestamptz nullable    | `expires_at` reserved — no retention sweep for media yet, see docs/SECURITY.md |
+
+### `whatsapp_call_events`
+
+Signaling metadata only — never call audio/video (Baileys doesn't
+implement WebRTC media handling; see ADR-001).
+
+| column                | type                                  | notes                                                                                            |
+| --------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| id                    | uuid pk                               |                                                                                                  |
+| account_id            | uuid, fk → whatsapp_accounts, cascade |                                                                                                  |
+| caller_jid / chat_jid | text                                  |                                                                                                  |
+| group_id              | uuid nullable, fk, on delete set null | best-effort; most calls have no group context                                                    |
+| is_group / is_video   | boolean default false                 |                                                                                                  |
+| status                | text                                  | Baileys' `WACallUpdateType`                                                                      |
+| action_taken          | text nullable                         | `logged` \| `notified_owner` \| `rejected` \| `sent_message` \| `reject_failed` \| `send_failed` |
+| created_at            | timestamptz                           | indexed with account_id                                                                          |
+
+### `whatsapp_moderation_state`
+
+Durable per-(rule, sender) sliding window for the deterministic
+"repeated messages" spam heuristic — survives a restart like
+`rule_matches`/`rule_cooldowns` do.
+
+| column            | type                            | notes      |
+| ----------------- | ------------------------------- | ---------- |
+| rule_id           | uuid, fk → group_rules, cascade | part of pk |
+| sender_jid        | text                            | part of pk |
+| window_started_at | timestamptz                     |            |
+| message_count     | integer default 0               |            |
+
+### `whatsapp_notification_cooldowns`
+
+Dedup/cooldown for owner notifications triggered outside the rule engine's
+own per-rule cooldown (a deleted message detected, a call attempted).
+
+| column           | type                                  | notes                                                            |
+| ---------------- | ------------------------------------- | ---------------------------------------------------------------- |
+| account_id       | uuid, fk → whatsapp_accounts, cascade | part of pk                                                       |
+| notification_key | text                                  | part of pk, e.g. `deleted_message:<groupId>`, `call:<callerJid>` |
+| last_sent_at     | timestamptz                           |                                                                  |
+
+### `whatsapp_account_settings`
+
+Call handling, configured per **WhatsApp account**, not per group — an
+incoming call isn't reliably scoped to a specific monitored group the way
+messages are, and there is no per-contact/DM settings model yet (the
+`contacts` table below remains unbuilt). See docs/DECISIONS.md.
+
+| column                | type                                     | notes                                                                 |
+| --------------------- | ---------------------------------------- | --------------------------------------------------------------------- |
+| account_id            | uuid pk, fk → whatsapp_accounts, cascade |                                                                       |
+| call_handling_enabled | boolean default false                    |                                                                       |
+| call_response_action  | text default 'LOG_ONLY'                  | `LOG_ONLY` \| `NOTIFY_OWNER` \| `AUTO_REJECT` \| `SEND_MESSAGE_AFTER` |
+| call_response_message | text nullable                            |                                                                       |
+| updated_at            | timestamptz                              |                                                                       |
+
+### Supabase Storage: `whatsapp-media` bucket
+
+Private (`public: false`), created by the same migration
+(`insert into storage.buckets ...`). No anonymous/public policies on
+`storage.objects` for this bucket — same default-deny, service-role-only
+access model as every table in this project. The dashboard never links to
+it directly; `GET /api/groups/:id/media-archive/:mediaId/url` mints a
+60-second signed URL per authenticated request.
 
 ## Design principles
 

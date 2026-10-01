@@ -33,6 +33,18 @@ export interface GroupSettings {
   customGroupInstructions: string | undefined;
   customAiInstructions: string | undefined;
   defaultCooldownSeconds: number;
+  /** Explicit third gate (with aiEnabled + autoReplyEnabled) required before an AI-generated auto-reply can fire. */
+  aiAutoReplyEnabled: boolean;
+  /** Whether a rule in this group is permitted to select the AI classifier at all, independent of aiAutoReplyEnabled. */
+  aiSemanticClassificationEnabled: boolean;
+  aiCooldownSeconds: number;
+  /** undefined = unlimited. */
+  aiMaxResponsesPerHour: number | undefined;
+  /** undefined = no automatic purge of archived deleted-message content. */
+  deletedMessageRetentionDays: number | undefined;
+  mediaMaxFileSizeBytes: number;
+  /** Separate, explicit gate for DELETE_MESSAGE/REMOVE_USER — never implied by moderationEnabled alone. */
+  moderationDestructiveActionsEnabled: boolean;
   updatedAt: string;
 }
 
@@ -48,6 +60,13 @@ export const DEFAULT_GROUP_SETTINGS: Omit<GroupSettings, 'groupId' | 'updatedAt'
   customGroupInstructions: undefined,
   customAiInstructions: undefined,
   defaultCooldownSeconds: 0,
+  aiAutoReplyEnabled: false,
+  aiSemanticClassificationEnabled: false,
+  aiCooldownSeconds: 0,
+  aiMaxResponsesPerHour: undefined,
+  deletedMessageRetentionDays: undefined,
+  mediaMaxFileSizeBytes: 16_777_216,
+  moderationDestructiveActionsEnabled: false,
 };
 
 export interface GroupSettingsPatch {
@@ -62,6 +81,13 @@ export interface GroupSettingsPatch {
   customGroupInstructions?: string | undefined;
   customAiInstructions?: string | undefined;
   defaultCooldownSeconds?: number;
+  aiAutoReplyEnabled?: boolean;
+  aiSemanticClassificationEnabled?: boolean;
+  aiCooldownSeconds?: number;
+  aiMaxResponsesPerHour?: number | undefined;
+  deletedMessageRetentionDays?: number | undefined;
+  mediaMaxFileSizeBytes?: number;
+  moderationDestructiveActionsEnabled?: boolean;
 }
 
 interface GroupRow {
@@ -86,6 +112,13 @@ interface GroupSettingsRow {
   custom_group_instructions: string | null;
   custom_ai_instructions: string | null;
   default_cooldown_seconds: number;
+  ai_auto_reply_enabled: boolean;
+  ai_semantic_classification_enabled: boolean;
+  ai_cooldown_seconds: number;
+  ai_max_responses_per_hour: number | null;
+  deleted_message_retention_days: number | null;
+  media_max_file_size_bytes: number;
+  moderation_destructive_actions_enabled: boolean;
   updated_at: string;
 }
 
@@ -114,6 +147,13 @@ function fromSettingsRow(row: GroupSettingsRow): GroupSettings {
     customGroupInstructions: row.custom_group_instructions ?? undefined,
     customAiInstructions: row.custom_ai_instructions ?? undefined,
     defaultCooldownSeconds: row.default_cooldown_seconds,
+    aiAutoReplyEnabled: row.ai_auto_reply_enabled,
+    aiSemanticClassificationEnabled: row.ai_semantic_classification_enabled,
+    aiCooldownSeconds: row.ai_cooldown_seconds,
+    aiMaxResponsesPerHour: row.ai_max_responses_per_hour ?? undefined,
+    deletedMessageRetentionDays: row.deleted_message_retention_days ?? undefined,
+    mediaMaxFileSizeBytes: row.media_max_file_size_bytes,
+    moderationDestructiveActionsEnabled: row.moderation_destructive_actions_enabled,
     updatedAt: row.updated_at,
   };
 }
@@ -141,6 +181,23 @@ function toSettingsPatchRow(patch: GroupSettingsPatch): Record<string, unknown> 
   }
   if (patch.defaultCooldownSeconds !== undefined) {
     row.default_cooldown_seconds = patch.defaultCooldownSeconds;
+  }
+  if (patch.aiAutoReplyEnabled !== undefined) row.ai_auto_reply_enabled = patch.aiAutoReplyEnabled;
+  if (patch.aiSemanticClassificationEnabled !== undefined) {
+    row.ai_semantic_classification_enabled = patch.aiSemanticClassificationEnabled;
+  }
+  if (patch.aiCooldownSeconds !== undefined) row.ai_cooldown_seconds = patch.aiCooldownSeconds;
+  if (patch.aiMaxResponsesPerHour !== undefined) {
+    row.ai_max_responses_per_hour = patch.aiMaxResponsesPerHour ?? null;
+  }
+  if (patch.deletedMessageRetentionDays !== undefined) {
+    row.deleted_message_retention_days = patch.deletedMessageRetentionDays ?? null;
+  }
+  if (patch.mediaMaxFileSizeBytes !== undefined) {
+    row.media_max_file_size_bytes = patch.mediaMaxFileSizeBytes;
+  }
+  if (patch.moderationDestructiveActionsEnabled !== undefined) {
+    row.moderation_destructive_actions_enabled = patch.moderationDestructiveActionsEnabled;
   }
   return row;
 }
@@ -237,6 +294,14 @@ export class GroupsRepository {
       custom_group_instructions: null,
       custom_ai_instructions: null,
       default_cooldown_seconds: DEFAULT_GROUP_SETTINGS.defaultCooldownSeconds,
+      ai_auto_reply_enabled: DEFAULT_GROUP_SETTINGS.aiAutoReplyEnabled,
+      ai_semantic_classification_enabled: DEFAULT_GROUP_SETTINGS.aiSemanticClassificationEnabled,
+      ai_cooldown_seconds: DEFAULT_GROUP_SETTINGS.aiCooldownSeconds,
+      ai_max_responses_per_hour: DEFAULT_GROUP_SETTINGS.aiMaxResponsesPerHour ?? null,
+      deleted_message_retention_days: DEFAULT_GROUP_SETTINGS.deletedMessageRetentionDays ?? null,
+      media_max_file_size_bytes: DEFAULT_GROUP_SETTINGS.mediaMaxFileSizeBytes,
+      moderation_destructive_actions_enabled:
+        DEFAULT_GROUP_SETTINGS.moderationDestructiveActionsEnabled,
       updated_at: now,
     };
     const { error } = await this.supabase

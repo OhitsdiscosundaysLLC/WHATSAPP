@@ -753,3 +753,169 @@ monitoring (rules run, but the full message archive isn't kept) —
   rejected per the product spec's own instruction ("do not unnecessarily
   store giant raw Baileys payloads") and docs/SECURITY.md's general
   data-minimization stance; only the normalized fields are persisted.
+
+---
+
+## ADR-013: AI, auto-reply, commands, archive, calls, moderation (Phase 6+)
+
+**Status:** Accepted (Phase 6+)
+
+### Context
+
+Phase 4+5 built the event pipeline and a deterministic rule engine, with
+the product spec explicit that AI must be a _tool_, invoked only when
+explicitly required — never "every message → OpenAI → response." This
+phase builds AI itself, plus auto-reply, an in-chat command system,
+deleted-message/view-once archiving, call-signal handling, and
+deterministic moderation, without rearchitecting anything from Phase 4+5.
+
+### Decision: `auto_reply` and `moderation` are new rule `trigger_type`s, not a parallel system
+
+The product spec describes auto-reply and moderation as distinct
+features, but both are structurally "evaluate a condition against an
+incoming message, then run exactly one action, with a cooldown" — exactly
+what `group_rules`/`RuleEngine` already does for `response_threshold`.
+Rather than building separate storage, a separate dashboard builder, and
+separate cooldown/audit plumbing, both became new `trigger_type` values
+(`src/rules/ruleConfig.ts`'s `AutoReplyConfigSchema`/`ModerationConfigSchema`),
+reusing `group_rules`, `rule_cooldowns` (via `RuleStateRepository.getLastFiredAt`/
+`recordFired`, already keyed generically by `rule_id`), `bot_actions`, and
+`whatsapp_audit_logs` unchanged. The only genuinely new storage is
+`whatsapp_moderation_state` (the repeated-message spam heuristic needs a
+sliding window, which no existing table modeled) and `whatsapp_ai_usage`
+(a cross-rule-type resource, not owned by any one rule). The already-live
+`response_threshold` schema was deliberately left **completely untouched**
+— the user had already run the Phase 4+5 real-world acceptance test
+against a live production rule by the time this phase started, and
+touching that schema was an avoidable risk for zero benefit.
+
+### Decision: AI permission is three independent gates, not one toggle
+
+The product spec's "AI USAGE POLICY" lists several conditions ("group has
+AI enabled," "rule explicitly requires AI," "auto-reply configuration
+explicitly permits AI"). Rather than collapsing these into implication
+(`aiEnabled` alone unlocking everything), `group_settings` gained three
+separate booleans — `ai_enabled`, `ai_auto_reply_enabled`,
+`ai_semantic_classification_enabled` — and `RuleEngine.evaluateAutoReply()`
+requires **all three** to be true before even checking the AI usage
+policy, in addition to the firing rule's own explicit classifier/action
+selection. This is deliberately more conservative than the spec strictly
+requires, matching its own instruction: "the owner must configure WHEN it
+responds." A future AI feature (e.g. AI-assisted moderation) gets its own
+explicit gate rather than silently inheriting `ai_enabled`'s scope.
+
+### Decision: prompt structure enforces the SYSTEM / OWNER / USER separation at the type level
+
+`AICompletionRequest` (`src/ai/aiProvider.ts`) has three required, distinct
+fields — `systemPolicy`, `ownerConfig`, `userMessage` — rather than one
+`prompt: string`. `OpenAIProvider.complete()` is the only place these are
+assembled into the three-message array OpenAI's API actually takes; no
+caller can accidentally concatenate the untrusted WhatsApp message into
+the system/owner portions, because the type doesn't offer that shape. This
+mirrors the project's existing pattern of making an invariant structural
+rather than conventional (see ADR-012's distinct-sender-counting decision)
+applied to prompt-injection resistance specifically.
+
+### Decision: deleted-message detection reuses the existing event pipeline, not a new listener
+
+Investigation of the installed Baileys source
+(`lib/Utils/process-message.js`) confirmed `REVOKE` is explicitly listed
+among the protocol-message types that "legitimately arrive from others"
+(not in the self-only-type guard), meaning WhatsApp delivers a deletion
+the same way as any other message: through `messages.upsert`. No new
+`connectionManager` listener was needed — `src/whatsapp/archive/deletedMessageHandler.ts`'s
+`extractRevokedKey()` inspects the raw `WAMessage` at the top of
+`EventPipeline.handleMessage()`, before normalization, and the revoke
+event still passes through the same `whatsapp_processed_events` dedup gate
+as everything else. "Delete for me" remains categorically undetectable —
+it is never transmitted over the wire to any other device at all (see
+ADR-001) — this phase does not and cannot change that.
+
+### Decision: call handling is configured per WhatsApp account, not per group
+
+`group_settings.call_handling_enabled` already existed (added speculatively
+in Phase 4+5) but is **not** read by this phase's call handler. A real
+`WACallEvent` carries `groupJid` only for group calls, which are rare in
+practice — the overwhelmingly common case (confirmed by the product spec's
+own acceptance test, "call the connected account") is a direct 1:1 call to
+the bot's own number, which has no group context at all. Building call
+configuration around a group that often doesn't exist for the event in
+question would mean most real calls fall through to no configuration.
+Instead, `whatsapp_account_settings` (new, one row per WhatsApp account)
+holds `call_handling_enabled`/`call_response_action`/`call_response_message`,
+and `src/whatsapp/calls/callHandler.ts` reads from there unconditionally.
+`group_settings.call_handling_enabled` is kept in the schema (accepted,
+not rejected, by `PATCH /api/groups/:id/settings`) purely for backward
+compatibility with the Phase 4+5 dashboard payload shape, but is
+documented plainly as unused — see docs/DATABASE.md.
+
+### Decision: destructive moderation actions are gated inside the action engine itself, not by the caller
+
+`DELETE_MESSAGE`/`REMOVE_USER` are valid shapes in `ModerationActionConfigSchema`
+(a rule can be configured with either), but
+`src/rules/moderation/moderationActionEngine.ts`'s `executeModerationAction()`
+checks `destructiveActionsEnabled` as the very first thing in both branches
+and returns `status: 'skipped'` otherwise — before calling
+`WhatsAppConnectionManager.deleteMessage()`/`removeParticipant()` at all.
+Putting the check inside the one function that can actually perform the
+action (rather than, say, validating it at rule-creation time, or checking
+it in `RuleEngine` before calling `executeModerationAction`) means there is
+exactly one code path capable of a destructive action, and it cannot be
+reached without the check — "never silently remove people" (product spec
+Part G) holds regardless of how many future callers this function gains.
+
+### Decision: view-once/media bytes go to Supabase Storage, metadata to Postgres
+
+Consistent with the project's existing "ciphertext/ids in Postgres, not
+raw binary" posture (see ADR-011's auth-key encryption), archived media
+files are uploaded to a private Supabase Storage bucket (`whatsapp-media`,
+`public: false`) and only metadata — sender, mime type, size, sha256,
+storage path — lives in `whatsapp_media_archive`. The dashboard never
+receives a durable public URL; `GET /api/groups/:id/media-archive/:mediaId/url`
+mints a 60-second signed URL per request, through the same authenticated-
+owner-session gate as every other dashboard endpoint.
+
+### Decision: the WhatsApp command system is a short-circuit inside the existing event pipeline
+
+`src/whatsapp/commands/commandHandler.ts`'s `tryHandleCommand()` is called
+from `EventPipeline.handleMessage()` **before** the `bot_enabled` check —
+deliberately, since `.bot on` must work precisely when the bot is off. It
+returns `false` (not a command) for anything not sent by a configured
+owner/admin JID, rather than replying with a rejection — a rejection would
+itself be an unrequested automated response to an unauthorized sender,
+which is exactly the behavior the rest of this phase works to prevent by
+default. A known, documented limitation: WhatsApp sometimes presents a
+sender as an `@lid` (linked-id) JID rather than
+`<number>@s.whatsapp.net`; authorization only matches the latter form —
+see docs/SECURITY.md.
+
+### Decision: AI usage rate-limiting lives in its own policy module, shared by every AI call site
+
+`src/ai/aiUsagePolicy.ts`'s `checkAiUsageAllowed()` is called from both
+`RuleEngine.evaluateAutoReply()` and the `.ai <question>` command path —
+one shared implementation of "is AI allowed right now for this group,"
+backed by `whatsapp_ai_usage` as the single source of truth (no in-memory
+counter that could drift between call sites or reset on restart).
+`AIService` itself stays unaware of policy entirely — it only ever
+executes a call it's given, consistent with "AI is a TOOL inside the
+automation system," not something that decides on its own when to run.
+
+### Alternatives considered
+
+- **A single `ai_enabled` toggle controlling all AI behavior**: rejected —
+  see the three-gate decision above; the spec explicitly wants granular
+  owner control over _when_ AI responds, not just _whether_ it exists.
+- **Storing full AI prompts/responses in `whatsapp_ai_usage` for
+  debugging**: rejected per docs/SECURITY.md's data-minimization stance —
+  usage rows carry only token counts, latency, and success/failure.
+- **A global AI rate limit** (across all groups): not built — only
+  per-group limits exist. Documented as a real, open gap in
+  docs/SECURITY.md rather than silently assumed away.
+- **A `media_archive.expires_at`-driven retention sweep for archived
+  media**, mirroring the deleted-message retention sweep: the column
+  exists but no sweep reads it yet — deleted-message _text_ retention was
+  built (`src/whatsapp/archive/retentionSweep.ts`) since the product spec
+  explicitly called for it ("do not keep everything forever by default"
+  under Part D specifically); a matching media sweep was judged
+  lower-priority for this pass and is documented as unbuilt, not silently
+  assumed to exist.

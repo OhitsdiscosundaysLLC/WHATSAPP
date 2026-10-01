@@ -272,3 +272,188 @@ describe('group routes — Supabase not configured', () => {
     expect(res.body.error).toBe('supabase_not_configured');
   });
 });
+
+describe('group routes — auto_reply and moderation rule creation (Phase 6+)', () => {
+  it('creates a deterministic auto_reply rule from the friendly form', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('auto-reply-create@g.us', 'Auto Reply Group');
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Hours auto-reply',
+        triggerType: 'auto_reply',
+        classifier: 'deterministic',
+        matchMode: 'contains',
+        phrases: ['hours'],
+        actionType: 'SEND_MESSAGE',
+        message: 'We are open 9-5.',
+        cooldownSeconds: 0,
+      })
+      .expect(201);
+
+    expect(res.body.rule.triggerType).toBe('auto_reply');
+    expect(res.body.rule.config.qualify).toMatchObject({
+      classifier: 'deterministic',
+      phrases: ['hours'],
+    });
+  });
+
+  it('creates an AI auto_reply rule with AI_REPLY action', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('auto-reply-ai@g.us', 'AI Auto Reply Group');
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'AI auto-reply',
+        triggerType: 'auto_reply',
+        classifier: 'ai',
+        aiInstructions: 'asks about opening hours',
+        actionType: 'AI_REPLY',
+        cooldownSeconds: 0,
+      })
+      .expect(201);
+
+    expect(res.body.rule.config.qualify).toMatchObject({
+      classifier: 'ai',
+      aiInstructions: 'asks about opening hours',
+    });
+    expect(res.body.rule.config.action).toMatchObject({ type: 'AI_REPLY' });
+  });
+
+  it('creates a moderation rule with banned phrases', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('moderation-create@g.us', 'Moderation Group');
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'No bad words',
+        triggerType: 'moderation',
+        bannedPhrases: ['bad word'],
+        actionType: 'WARN',
+        message: 'Please watch your language.',
+        cooldownSeconds: 0,
+      })
+      .expect(201);
+
+    expect(res.body.rule.triggerType).toBe('moderation');
+    expect(res.body.rule.config.qualify.bannedPhrases).toEqual(['bad word']);
+    expect(res.body.rule.config.action).toMatchObject({ type: 'WARN' });
+  });
+
+  it('rejects a moderation rule whose action is DELETE_MESSAGE with an invalid shape gracefully (still a valid shape, just unauthorized at execution time)', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('moderation-delete@g.us', 'Moderation Delete Group');
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Delete spam',
+        triggerType: 'moderation',
+        bannedPhrases: ['spam'],
+        actionType: 'DELETE_MESSAGE',
+        cooldownSeconds: 0,
+      })
+      .expect(201);
+
+    expect(res.body.rule.config.action).toEqual({ type: 'DELETE_MESSAGE' });
+  });
+
+  it('rejects an unknown trigger_type by falling back to response_threshold validation', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('bad-trigger@g.us', 'Bad Trigger Group');
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ name: 'x', triggerType: 'not_a_real_type', phrases: [], threshold: 1 })
+      .expect(400);
+    expect(res.body.error).toBe('invalid_rule_config');
+  });
+});
+
+describe('group routes — extended settings fields (Phase 6+)', () => {
+  it('accepts and persists the new AI/archive/moderation settings fields', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('extended-settings@g.us', 'Extended Settings Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        aiEnabled: true,
+        autoReplyEnabled: true,
+        aiAutoReplyEnabled: true,
+        aiSemanticClassificationEnabled: true,
+        aiCooldownSeconds: 120,
+        aiMaxResponsesPerHour: 10,
+        deletedMessageArchiveEnabled: true,
+        deletedMessageRetentionDays: 30,
+        viewOnceHandlingEnabled: true,
+        moderationEnabled: true,
+        moderationDestructiveActionsEnabled: true,
+      })
+      .expect(200);
+
+    expect(res.body.settings).toMatchObject({
+      aiEnabled: true,
+      autoReplyEnabled: true,
+      aiAutoReplyEnabled: true,
+      aiSemanticClassificationEnabled: true,
+      aiCooldownSeconds: 120,
+      aiMaxResponsesPerHour: 10,
+      deletedMessageArchiveEnabled: true,
+      deletedMessageRetentionDays: 30,
+      viewOnceHandlingEnabled: true,
+      moderationEnabled: true,
+      moderationDestructiveActionsEnabled: true,
+    });
+  });
+});
+
+describe('group routes — deleted messages and media archive', () => {
+  it('rejects unauthenticated access to deleted messages', async () => {
+    await request(app).get('/api/groups/some-id/deleted-messages').expect(401);
+  });
+
+  it('lists deleted messages for a group (empty when none archived)', async () => {
+    const { cookie } = await login();
+    const groupId = await seedGroup('deleted-list@g.us', 'Deleted List Group');
+    const res = await request(app)
+      .get(`/api/groups/${groupId}/deleted-messages`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body.messages).toEqual([]);
+  });
+
+  it('lists archived media for a group (empty when none archived)', async () => {
+    const { cookie } = await login();
+    const groupId = await seedGroup('media-list@g.us', 'Media List Group');
+    const res = await request(app)
+      .get(`/api/groups/${groupId}/media-archive`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body.media).toEqual([]);
+  });
+
+  it('returns 404 for a media id that does not exist', async () => {
+    const { cookie } = await login();
+    const groupId = await seedGroup('media-404@g.us', 'Media 404 Group');
+    await request(app)
+      .get(`/api/groups/${groupId}/media-archive/does-not-exist/url`)
+      .set('Cookie', cookie)
+      .expect(404);
+  });
+});

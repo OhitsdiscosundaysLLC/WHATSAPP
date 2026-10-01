@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { AuditRepository } from '../../db/auditRepository';
 import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
 import { GroupsRepository } from '../../db/groupsRepository';
+import { MediaArchiveRepository } from '../../db/mediaArchiveRepository';
 import { MessagesRepository } from '../../db/messagesRepository';
+import { ModerationStateRepository } from '../../db/moderationStateRepository';
+import { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
 import { RulesRepository } from '../../db/rulesRepository';
 import { RuleStateRepository } from '../../db/ruleStateRepository';
 import { DeterministicResponseClassifier } from '../../rules/classifiers/responseClassifier';
@@ -41,12 +44,22 @@ function setup() {
   const rulesRepository = new RulesRepository(fake as unknown as SupabaseClient);
   const auditRepository = new AuditRepository(fake as unknown as SupabaseClient);
   const sender = { sendTextMessage: vi.fn(async () => {}) };
+  const notificationCooldowns = new NotificationCooldownRepository(
+    fake as unknown as SupabaseClient,
+  );
+  const mediaArchiveRepository = new MediaArchiveRepository(fake as unknown as SupabaseClient);
   const ruleEngine = new RuleEngine({
     rulesRepository,
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
+    moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository,
     classifier: new DeterministicResponseClassifier(),
     sender,
+    moderationCapabilities: {
+      deleteMessage: vi.fn(async () => {}),
+      removeParticipant: vi.fn(async () => {}),
+    },
+    ai: undefined,
     ownerJids: [],
     logger: testLogger,
   });
@@ -56,6 +69,31 @@ function setup() {
     messagesRepository,
     ruleEngine,
     auditRepository,
+    deletedMessageHandlerDeps: {
+      groupsRepository,
+      messagesRepository,
+      auditRepository,
+      notificationCooldowns,
+      sender,
+      ownerJids: [],
+      logger: testLogger,
+    },
+    viewOnceHandlerDeps: {
+      supabase: fake as unknown as SupabaseClient,
+      mediaArchiveRepository,
+      auditRepository,
+      logger: testLogger,
+    },
+    commandHandlerDeps: {
+      groupsRepository,
+      rulesRepository,
+      auditRepository,
+      sender,
+      ai: undefined,
+      ownerNumbers: [],
+      adminNumbers: [],
+      logger: testLogger,
+    },
     logger: testLogger,
   });
   return {

@@ -1,9 +1,21 @@
 import { Router, type Request, type Response } from 'express';
+import {
+  AccountSettingsRepository,
+  type CallResponseAction,
+} from '../db/accountSettingsRepository';
+import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
 import { accountManager } from '../whatsapp/accountManager';
 import type { PairingSnapshot } from '../whatsapp/types';
 import { createChildLogger } from '../services/logger';
 import { attachSession, requireAuth, requireCsrf } from './authMiddleware';
 import { toClientPairingSnapshot } from './qrImage';
+
+const CALL_RESPONSE_ACTIONS: CallResponseAction[] = [
+  'LOG_ONLY',
+  'NOTIFY_OWNER',
+  'AUTO_REJECT',
+  'SEND_MESSAGE_AFTER',
+];
 
 const log = createChildLogger('web:accounts');
 
@@ -129,6 +141,66 @@ export function createAccountRouter(): Router {
       return;
     }
     res.status(200).json({ ok: true });
+  });
+
+  // Call handling is configured per WhatsApp ACCOUNT, not per group — see
+  // src/db/accountSettingsRepository.ts's doc comment for why.
+  router.get('/:id/call-settings', async (req: Request, res: Response) => {
+    if (!isSupabaseConfigured()) {
+      res.status(503).json({
+        error: 'supabase_not_configured',
+        message: 'Call handling requires Supabase to be configured.',
+      });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    if (!accountManager.hasAccount(id)) {
+      res.status(404).json({ error: 'account_not_found' });
+      return;
+    }
+    const repository = new AccountSettingsRepository(getSupabaseClient());
+    const settings = await repository.ensure(id);
+    res.status(200).json({ settings });
+  });
+
+  router.patch('/:id/call-settings', requireCsrf, async (req: Request, res: Response) => {
+    if (!isSupabaseConfigured()) {
+      res.status(503).json({
+        error: 'supabase_not_configured',
+        message: 'Call handling requires Supabase to be configured.',
+      });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    if (!accountManager.hasAccount(id)) {
+      res.status(404).json({ error: 'account_not_found' });
+      return;
+    }
+
+    const body = req.body as
+      | {
+          callHandlingEnabled?: unknown;
+          callResponseAction?: unknown;
+          callResponseMessage?: unknown;
+        }
+      | undefined;
+    const patch: Parameters<AccountSettingsRepository['update']>[1] = {};
+    if (typeof body?.callHandlingEnabled === 'boolean') {
+      patch.callHandlingEnabled = body.callHandlingEnabled;
+    }
+    if (
+      typeof body?.callResponseAction === 'string' &&
+      CALL_RESPONSE_ACTIONS.includes(body.callResponseAction as CallResponseAction)
+    ) {
+      patch.callResponseAction = body.callResponseAction as CallResponseAction;
+    }
+    if (typeof body?.callResponseMessage === 'string') {
+      patch.callResponseMessage = body.callResponseMessage;
+    }
+
+    const repository = new AccountSettingsRepository(getSupabaseClient());
+    const settings = await repository.update(id, patch);
+    res.status(200).json({ settings });
   });
 
   return router;

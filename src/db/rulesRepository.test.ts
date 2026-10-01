@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
+import type { ResponseThresholdConfig } from '../rules/ruleConfig';
 import { FakeSupabaseClient } from './fakeSupabaseClient';
 import { RulesRepository } from './rulesRepository';
 
@@ -26,7 +27,7 @@ describe('RulesRepository', () => {
     });
     expect(rule.name).toBe('Five people congratulate');
     expect(rule.enabled).toBe(true);
-    expect(rule.config.threshold).toBe(5);
+    expect((rule.config as ResponseThresholdConfig).threshold).toBe(5);
   });
 
   it('rejects an unknown trigger_type', async () => {
@@ -146,7 +147,7 @@ describe('RulesRepository', () => {
 
     // The rejected update must not have partially applied.
     const unchanged = await r.getById(a.id);
-    expect(unchanged?.config.threshold).toBe(5);
+    expect((unchanged?.config as ResponseThresholdConfig).threshold).toBe(5);
   });
 
   it('rules created for one group never appear when listing another group', async () => {

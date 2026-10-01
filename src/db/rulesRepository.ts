@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { validateRuleConfig, type ResponseThresholdConfig } from '../rules/ruleConfig';
+import { validateRuleConfig, type GroupRuleConfig } from '../rules/ruleConfig';
 
 export interface GroupRule {
   id: string;
@@ -8,7 +8,7 @@ export interface GroupRule {
   name: string;
   enabled: boolean;
   triggerType: string;
-  config: ResponseThresholdConfig;
+  config: GroupRuleConfig;
   createdAt: string;
   updatedAt: string;
 }

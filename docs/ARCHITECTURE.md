@@ -53,24 +53,32 @@
                                  └──────────────────────────┘
 ```
 
-`commands/` (WhatsApp-native `.bot on` style commands) and `moderation/`
-(kick/ban/warn) are explicitly **not built yet** (see
-`docs/DEVELOPMENT_PLAN.md`) — when they land, they'll be other producers of
-actions that go through the same `actionEngine.ts`, so every action, however
-triggered, is logged and permission-checked the same way.
+`commands/` (`src/whatsapp/commands/commandHandler.ts`) and `moderation/`
+(`src/rules/moderation/`) are implemented as of Phase 6+ — see "WhatsApp
+commands" and "Moderation" below. Both are producers of actions that go
+through either `actionEngine.ts` or its moderation-specific sibling
+`moderationActionEngine.ts`, so every action, however triggered, is logged
+and permission-checked the same way.
 
 ## Why AI is not in the hot path
 
 `rules/classifiers/responseClassifier.ts` defines a `ResponseClassifier`
 interface with exactly one method (`classify(text, config) => Promise<boolean>`),
-implemented today by `DeterministicResponseClassifier` (exact/contains/
-keyword matching, no network call, no cost). `RuleEngine` depends only on
-this interface, never on OpenAI directly — a future `AIResponseClassifier`
-plugs in by implementing the same interface, without the rule engine's
-control flow changing at all. This keeps per-message AI usage at exactly
-zero until Phase 6 actually adds it, and bounds where "AI" can even be
-reached from: only inside a classifier, never as the default path for every
-incoming message. See docs/DECISIONS.md ADR-012.
+implemented by `DeterministicResponseClassifier` (exact/contains/keyword
+matching, no network call, no cost) for `response_threshold` rules.
+`RuleEngine` depends only on this interface for that trigger type, never
+on OpenAI directly. For `auto_reply` rules (Phase 6+), the equivalent
+decoupling is `src/rules/classifiers/autoReplyClassifier.ts`'s
+`classifyAutoReply()`, which only ever reaches `AIService.classify()` when
+a rule's own config explicitly selects `classifier: 'ai'` **and** three
+independent group-level permission gates are all true
+(`ai_enabled`/`ai_auto_reply_enabled`/`ai_semantic_classification_enabled`
+— see docs/DECISIONS.md ADR-013) **and** the AI usage/rate-limit policy
+(`src/ai/aiUsagePolicy.ts`) allows it. AI usage is bounded to exactly these
+explicit paths: a rule's classifier selection, a rule's `AI_REPLY` action,
+or the `.ai <question>` command — never the default path for an incoming
+message. `src/rules/ruleEngine.test.ts` asserts the AI service is never
+called unless every gate is on.
 
 ## Idempotency
 
@@ -290,18 +298,53 @@ yet at this point.
 `src/whatsapp/accountStore.ts`), replacing local-file storage in production.
 See docs/DECISIONS.md ADR-011.
 
-**Phase 4+5** (this phase) — the actual automation product, built on top of
-the Phase 1-3 infrastructure without modifying the connection/auth layers:
-the message/event pipeline (`src/whatsapp/events/`), WhatsApp group
-discovery and per-group configuration (`src/whatsapp/groups/`,
+**Phase 4+5** — the actual automation product, built on top of the Phase
+1-3 infrastructure without modifying the connection/auth layers: the
+message/event pipeline (`src/whatsapp/events/`), WhatsApp group discovery
+and per-group configuration (`src/whatsapp/groups/`,
 `src/db/groupsRepository.ts`), the deterministic rule engine and action
 engine (`src/rules/`), durable rule state (`src/db/ruleStateRepository.ts`),
 audit logging (`src/db/auditRepository.ts`), and the dashboard's Groups /
 group-detail / Activity pages (`src/web/groupRoutes.ts`,
-`src/web/activityRoutes.ts`). The one implemented rule type is
-`response_threshold` (the "N distinct people respond" pattern). AI
-classification, deleted-message recovery, view-once media, call automation,
-moderation actions, and the WhatsApp-native command system are explicitly
-**not built yet** — interfaces are shaped so they can plug in later (see
-"Why AI is not in the hot path" above) without this phase's work being
-reworked. See docs/DECISIONS.md ADR-012 for the full design rationale.
+`src/web/activityRoutes.ts`). The one rule type implemented in this phase
+was `response_threshold` (the "N distinct people respond" pattern). See
+docs/DECISIONS.md ADR-012 for the full design rationale.
+
+**Phase 6+** (this phase) — AI, auto-reply, commands, deleted-message/
+view-once archive, call signaling, and deterministic moderation, again
+without reworking anything from Phase 1-5:
+
+- `src/ai/` — `AIProvider`/`OpenAIProvider` (fetch-based, no SDK
+  dependency), `AIService` (the one place any AI call is made, with
+  strict SYSTEM/OWNER/USER prompt separation), `aiUsagePolicy.ts`
+  (cooldown + max-per-hour, shared by every AI call site).
+- `src/rules/` gained two new `trigger_type`s — `auto_reply` and
+  `moderation` — reusing the existing rule/cooldown/audit infrastructure
+  rather than building parallel systems (see ADR-013).
+  `src/rules/classifiers/autoReplyClassifier.ts` and
+  `src/rules/moderation/` (`moderationQualifier.ts`,
+  `moderationActionEngine.ts`) hold the new trigger-type-specific logic.
+- `src/whatsapp/commands/commandHandler.ts` — owner/admin in-chat
+  commands, short-circuiting `EventPipeline.handleMessage()` before the
+  `bot_enabled` gate.
+- `src/whatsapp/archive/` — `deletedMessageHandler.ts` (WhatsApp
+  "delete for everyone" detection), `viewOnceHandler.ts` (opt-in view-once
+  media archiving to a private Supabase Storage bucket), `retentionSweep.ts`
+  (best-effort periodic purge of expired archived deleted-message text).
+- `src/whatsapp/calls/callHandler.ts` — Baileys call-signaling events,
+  configured per WhatsApp account (`src/db/accountSettingsRepository.ts`),
+  not per group.
+- `WhatsAppConnectionManager` gained `deleteMessage()`, `removeParticipant()`,
+  `rejectCall()`, and an `onCall` callback — still zero content
+  interpretation itself, same pattern as `onMessage`/`onGroupsDiscovered`
+  from Phase 4+5.
+
+See docs/DECISIONS.md ADR-013 for the full design rationale, including why
+`auto_reply`/`moderation` reuse the rule engine, why AI permission is three
+independent gates, and why call handling is account-scoped.
+
+Explicitly **not built** by this phase, per the product spec's own
+instruction: AI-powered moderation (moderation stays deterministic-only),
+a general (non-view-once) media archive, a global cross-group AI rate
+limit, and private-DM automation (still off by default — see "Per-group
+isolation" above).

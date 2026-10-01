@@ -27,110 +27,387 @@
       <div id="load-error" class="error-text"></div>
 
       <div id="group-content" class="hidden">
-        <section style="margin-bottom: 28px">
+        <section style="margin-bottom: 20px">
           <h2 id="group-subject" style="margin: 0 0 4px"></h2>
           <p id="group-meta" class="muted" style="margin: 0; font-size: 13px"></p>
         </section>
 
-        <section class="card" style="padding: 20px; margin-bottom: 24px">
-          <div class="section-head" style="margin-bottom: 4px">
-            <h2>Settings</h2>
-          </div>
-          <p class="muted" style="font-size: 13px; margin-top: 0">
-            Every control starts OFF for a newly discovered group. Nothing automates itself until
-            you turn it on here.
-          </p>
-          <div id="settings-error" class="error-text"></div>
-          <div id="settings-toggles"></div>
+        <div class="tabs" style="margin-bottom: 20px; flex-wrap: wrap">
+          <button class="tab-btn active" data-section-tab="general" type="button">General</button>
+          <button class="tab-btn" data-section-tab="ai" type="button">AI</button>
+          <button class="tab-btn" data-section-tab="rules" type="button">Rules</button>
+          <button class="tab-btn" data-section-tab="moderation" type="button">Moderation</button>
+          <button class="tab-btn" data-section-tab="archive" type="button">Archive</button>
+          <button class="tab-btn" data-section-tab="calls" type="button">Calls</button>
+          <button class="tab-btn" data-section-tab="commands" type="button">Commands</button>
+          <button class="tab-btn" data-section-tab="activity" type="button">Activity</button>
+        </div>
 
-          <div style="margin-top: 16px">
-            <label class="field-label" for="group-instructions"
-              >Custom group instructions <span class="badge-soon">Not yet used</span></label
-            >
-            <textarea
-              id="group-instructions"
-              placeholder="Stored for a future phase — not read by any feature yet."
-            ></textarea>
-            <button class="btn btn-sm" id="save-instructions-btn" style="margin-top: 8px">
-              Save
-            </button>
-          </div>
+        <!-- ---------- GENERAL ---------- -->
+        <section class="section-tab" data-section="general">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>General</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Every control starts OFF for a newly discovered group. Nothing automates itself until
+              you turn it on here.
+            </p>
+            <div id="settings-error" class="error-text"></div>
+            <div id="general-toggles"></div>
+
+            <div style="margin-top: 16px">
+              <label class="field-label" for="group-instructions">Custom group instructions</label>
+              <p class="muted" style="font-size: 12px; margin: 0 0 6px">
+                Included as context for AI-generated replies in this group (when AI is on).
+              </p>
+              <textarea
+                id="group-instructions"
+                placeholder="e.g. This group is for customer support — be concise and friendly."
+              ></textarea>
+              <button class="btn btn-sm" id="save-instructions-btn" style="margin-top: 8px">
+                Save
+              </button>
+            </div>
+          </section>
         </section>
 
-        <section style="margin-bottom: 24px">
-          <div class="section-head">
-            <h2>Rules</h2>
-            <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
-          </div>
-          <div id="rules-error" class="error-text"></div>
+        <!-- ---------- AI ---------- -->
+        <section class="section-tab hidden" data-section="ai">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>AI</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              AI is a tool inside the automation system — it is only ever called when explicitly
+              required by a rule or command, never for every message.
+            </p>
+            <div id="ai-error" class="error-text"></div>
+            <div id="ai-toggles"></div>
 
-          <div id="rule-form" class="card hidden" style="padding: 18px; margin-bottom: 14px">
-            <h3 style="margin: 0 0 12px; font-size: 15px">New rule — N distinct people respond</h3>
-            <div class="field">
-              <label class="field-label" for="rule-name">Name</label>
-              <input type="text" id="rule-name" placeholder="e.g. Five people congratulate" />
+            <div class="field" style="margin-top: 16px">
+              <label class="field-label" for="ai-cooldown">AI cooldown (seconds, 0 = none)</label>
+              <input type="text" inputmode="numeric" id="ai-cooldown" value="0" />
             </div>
             <div class="field">
-              <label class="field-label" for="rule-phrases"
-                >Qualifying phrases (comma-separated)</label
+              <label class="field-label" for="ai-max-per-hour"
+                >Max AI responses per hour (blank = unlimited)</label
               >
+              <input type="text" inputmode="numeric" id="ai-max-per-hour" placeholder="unlimited" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="ai-instructions">Custom AI instructions</label>
               <textarea
-                id="rule-phrases"
-                placeholder="congrats, congratulations, noted sir, okay sir"
+                id="ai-instructions"
+                placeholder="e.g. Keep replies under 2 sentences. Never discuss pricing."
               ></textarea>
             </div>
-            <div class="field">
-              <label class="field-label" for="rule-match-mode">Match mode</label>
-              <select id="rule-match-mode">
-                <option value="contains">Contains any phrase</option>
-                <option value="exact">Exact match</option>
-                <option value="keyword_any">Any whole word matches</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="rule-threshold">Distinct people required</label>
-              <input type="text" inputmode="numeric" id="rule-threshold" value="5" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="rule-cooldown">Cooldown (seconds, 0 = none)</label>
-              <input type="text" inputmode="numeric" id="rule-cooldown" value="0" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="rule-action-type"
-                >When the threshold is reached</label
-              >
-              <select id="rule-action-type">
-                <option value="SEND_MESSAGE">Send a message to this group</option>
-                <option value="NOTIFY_OWNER">Notify the owner (not the group)</option>
-                <option value="LOG_ONLY">Log only — don't send anything</option>
-              </select>
-            </div>
-            <div class="field" id="rule-message-field">
-              <label class="field-label" for="rule-message">Message</label>
-              <textarea id="rule-message" placeholder="Thanks everyone!"></textarea>
-            </div>
-            <div class="rule-actions">
-              <button class="btn btn-primary btn-sm" id="save-rule-btn">Create Rule</button>
-              <button class="btn btn-ghost btn-sm" id="cancel-rule-btn">Cancel</button>
-            </div>
-          </div>
-
-          <div id="rule-list" class="group-list"></div>
-          <div id="rules-empty" class="empty-state hidden">
-            <p>No rules yet for this group.</p>
-          </div>
+            <button class="btn btn-sm" id="save-ai-btn">Save</button>
+          </section>
         </section>
 
-        <section>
-          <div class="section-head">
-            <h2>Recent Activity</h2>
-          </div>
-          <div class="card">
-            <div id="activity-list" class="activity-list"></div>
-            <div id="activity-empty" class="empty-state hidden">
-              <p>No activity recorded yet for this group.</p>
+        <!-- ---------- RULES ---------- -->
+        <section class="section-tab hidden" data-section="rules">
+          <section style="margin-bottom: 24px">
+            <div class="section-head">
+              <h2>Rules</h2>
+              <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
             </div>
-          </div>
+            <div id="rules-error" class="error-text"></div>
+
+            <div id="rule-form" class="card hidden" style="padding: 18px; margin-bottom: 14px">
+              <h3 style="margin: 0 0 12px; font-size: 15px">New rule</h3>
+
+              <div class="field">
+                <label class="field-label" for="rule-trigger-type">Rule type</label>
+                <select id="rule-trigger-type">
+                  <option value="response_threshold">N distinct people respond</option>
+                  <option value="auto_reply">Auto-reply</option>
+                  <option value="moderation">Moderation</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="rule-name">Name</label>
+                <input type="text" id="rule-name" placeholder="e.g. Five people congratulate" />
+              </div>
+
+              <!-- response_threshold + auto_reply (deterministic) qualify -->
+              <div id="rule-fields-phrases">
+                <div class="field">
+                  <label class="field-label" for="rule-phrases"
+                    >Qualifying phrases (comma-separated)</label
+                  >
+                  <textarea
+                    id="rule-phrases"
+                    placeholder="congrats, congratulations, noted sir, okay sir"
+                  ></textarea>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="rule-match-mode">Match mode</label>
+                  <select id="rule-match-mode">
+                    <option value="contains">Contains any phrase</option>
+                    <option value="exact">Exact match</option>
+                    <option value="keyword_any">Any whole word matches</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- response_threshold only -->
+              <div id="rule-fields-threshold">
+                <div class="field">
+                  <label class="field-label" for="rule-threshold">Distinct people required</label>
+                  <input type="text" inputmode="numeric" id="rule-threshold" value="5" />
+                </div>
+              </div>
+
+              <!-- auto_reply only -->
+              <div id="rule-fields-autoreply" class="hidden">
+                <div class="field">
+                  <label class="field-label" for="rule-classifier">Qualification method</label>
+                  <select id="rule-classifier">
+                    <option value="deterministic">Keyword/phrase match</option>
+                    <option value="ai">
+                      AI semantic match (requires AI enabled for this group)
+                    </option>
+                  </select>
+                </div>
+                <div class="field" id="rule-ai-instructions-field">
+                  <label class="field-label" for="rule-ai-instructions"
+                    >Describe what qualifies (for AI)</label
+                  >
+                  <textarea
+                    id="rule-ai-instructions"
+                    placeholder="e.g. asks about our opening hours"
+                  ></textarea>
+                </div>
+              </div>
+
+              <!-- moderation only -->
+              <div id="rule-fields-moderation" class="hidden">
+                <div class="field">
+                  <label class="field-label" for="rule-banned-phrases"
+                    >Banned phrases (comma-separated)</label
+                  >
+                  <textarea id="rule-banned-phrases" placeholder="banned word, slur"></textarea>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="rule-spam-threshold"
+                    >Repeated-message spam threshold (0 = disabled)</label
+                  >
+                  <input type="text" inputmode="numeric" id="rule-spam-threshold" value="0" />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="rule-spam-window">Spam window (seconds)</label>
+                  <input type="text" inputmode="numeric" id="rule-spam-window" value="30" />
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Detect links</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-detect-links" />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="rule-cooldown">Cooldown (seconds, 0 = none)</label>
+                <input type="text" inputmode="numeric" id="rule-cooldown" value="0" />
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="rule-action-type">Action</label>
+                <select id="rule-action-type"></select>
+              </div>
+              <div class="field" id="rule-message-field">
+                <label class="field-label" for="rule-message">Message</label>
+                <textarea id="rule-message" placeholder="Thanks everyone!"></textarea>
+              </div>
+
+              <div class="rule-actions">
+                <button class="btn btn-primary btn-sm" id="save-rule-btn">Create Rule</button>
+                <button class="btn btn-ghost btn-sm" id="cancel-rule-btn">Cancel</button>
+              </div>
+            </div>
+
+            <div id="rule-list" class="group-list"></div>
+            <div id="rules-empty" class="empty-state hidden">
+              <p>No rules yet for this group.</p>
+            </div>
+          </section>
+        </section>
+
+        <!-- ---------- MODERATION ---------- -->
+        <section class="section-tab hidden" data-section="moderation">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Moderation</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Deterministic moderation only (banned phrases, repeated-message spam, link detection).
+              Destructive actions (delete a message, remove a participant) require an explicit
+              second switch below — never implied by Moderation being on.
+            </p>
+            <div id="moderation-error" class="error-text"></div>
+            <div id="moderation-toggles"></div>
+            <p class="muted" style="font-size: 12px; margin-top: 12px">
+              Create and manage moderation rules from the <strong>Rules</strong> tab (rule type:
+              "Moderation").
+            </p>
+          </section>
+        </section>
+
+        <!-- ---------- ARCHIVE ---------- -->
+        <section class="section-tab hidden" data-section="archive">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Deleted-Message Archive</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Only "delete for everyone" is observable by WhatsApp's protocol —
+              <strong>"delete for me" can never be detected or recovered</strong>, by this bot or
+              any other. Requires Monitoring to also be on.
+            </p>
+            <div id="archive-error" class="error-text"></div>
+            <div id="archive-toggles"></div>
+            <div class="field" style="margin-top: 12px">
+              <label class="field-label" for="retention-days">Retention</label>
+              <select id="retention-days">
+                <option value="">Disabled (keep forever)</option>
+                <option value="7">7 days</option>
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+              </select>
+            </div>
+            <button class="btn btn-sm" id="save-archive-btn" style="margin-top: 8px">Save</button>
+          </section>
+
+          <section style="margin-bottom: 24px">
+            <div class="section-head"><h3 style="margin: 0">Recently Deleted Messages</h3></div>
+            <div class="card">
+              <div id="deleted-list" class="activity-list"></div>
+              <div id="deleted-empty" class="empty-state hidden">
+                <p>No deleted messages archived yet.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>View-Once Media</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Privacy-sensitive — opt-in only. Archives eligible incoming view-once images/videos
+              before they disappear. Requires Monitoring to also be on.
+            </p>
+            <div id="viewonce-toggles"></div>
+          </section>
+
+          <section>
+            <div class="section-head"><h3 style="margin: 0">Archived Media</h3></div>
+            <div class="card">
+              <div id="media-list" class="activity-list"></div>
+              <div id="media-empty" class="empty-state hidden">
+                <p>No media archived yet.</p>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ---------- CALLS ---------- -->
+        <section class="section-tab hidden" data-section="calls">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Calls</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Call handling applies to the <strong>whole WhatsApp account</strong>, not just this
+              group — WhatsApp calls aren't reliably scoped to a monitored group. Baileys exposes
+              call signaling only; this bot can never answer, record, or stream audio/video for a
+              call.
+            </p>
+            <div id="calls-error" class="error-text"></div>
+            <div class="toggle-row">
+              <div class="toggle-label">
+                <div class="toggle-label-text">Call handling</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="call-handling-enabled" />
+                <span class="toggle-track"></span>
+                <span class="toggle-thumb"></span>
+              </label>
+            </div>
+            <div class="field" style="margin-top: 12px">
+              <label class="field-label" for="call-response-action">Response</label>
+              <select id="call-response-action">
+                <option value="LOG_ONLY">Log only</option>
+                <option value="NOTIFY_OWNER">Notify the owner</option>
+                <option value="AUTO_REJECT">Automatically reject the call</option>
+                <option value="SEND_MESSAGE_AFTER">Send the caller a message</option>
+              </select>
+            </div>
+            <div class="field" id="call-message-field">
+              <label class="field-label" for="call-response-message">Message to the caller</label>
+              <textarea
+                id="call-response-message"
+                placeholder="Sorry, I can't take calls. Please send a message."
+              ></textarea>
+            </div>
+            <button class="btn btn-sm" id="save-calls-btn">Save</button>
+          </section>
+        </section>
+
+        <!-- ---------- COMMANDS ---------- -->
+        <section class="section-tab hidden" data-section="commands">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Commands</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Available only to numbers configured in <code>OWNER_WHATSAPP_NUMBERS</code> /
+              <code>ADMIN_WHATSAPP_NUMBERS</code> (set on the server), sent as a message inside this
+              group. Normal participants cannot use these.
+            </p>
+            <pre
+              style="
+                background: var(--surface-raised);
+                padding: 12px;
+                border-radius: var(--radius);
+                font-size: 13px;
+                overflow-x: auto;
+              "
+            >
+.bot on|off       Turn the bot on/off for this group
+.ai on|off        Turn AI on/off for this group
+.ai &lt;question&gt;    Ask AI directly (requires AI on)
+.rules            List this group's rules
+.settings         Show this group's current configuration
+.status           Quick status summary
+.help             This list</pre>
+            <p class="muted" style="font-size: 12px">
+              Known limitation: WhatsApp sometimes presents a sender as an <code>@lid</code>
+              (linked-id) JID instead of a phone-number JID. A configured owner/admin number only
+              matches when WhatsApp presents it in the standard
+              <code>&lt;number&gt;@s.whatsapp.net</code> form.
+            </p>
+          </section>
+        </section>
+
+        <!-- ---------- ACTIVITY ---------- -->
+        <section class="section-tab hidden" data-section="activity">
+          <section>
+            <div class="section-head">
+              <h2>Recent Activity</h2>
+            </div>
+            <div class="card">
+              <div id="activity-list" class="activity-list"></div>
+              <div id="activity-empty" class="empty-state hidden">
+                <p>No activity recorded yet for this group.</p>
+              </div>
+            </div>
+          </section>
         </section>
       </div>
     </main>

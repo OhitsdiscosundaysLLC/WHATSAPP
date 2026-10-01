@@ -1,8 +1,11 @@
 import { config } from './config/config';
-import { checkDatabaseHealth } from './db/supabaseClient';
+import { checkDatabaseHealth, getSupabaseClient } from './db/supabaseClient';
+import { GroupsRepository } from './db/groupsRepository';
+import { MessagesRepository } from './db/messagesRepository';
 import { logger } from './services/logger';
 import { createServer } from './server';
 import { accountManager } from './whatsapp/accountManager';
+import { startRetentionSweep } from './whatsapp/archive/retentionSweep';
 
 function main() {
   logger.info(
@@ -16,7 +19,7 @@ function main() {
       ownerCount: config.authorization.ownerNumbers.length,
       adminCount: config.authorization.adminNumbers.length,
     },
-    'Starting WhatsApp automation bot (Phase 5: event pipeline, group config, deterministic rule engine — no AI yet)',
+    'Starting WhatsApp automation bot (Phase 6+: AI, auto-reply, commands, deleted-message/view-once archive, calls, moderation)',
   );
 
   if (!config.dashboard.configured) {
@@ -48,6 +51,19 @@ function main() {
     logger.info('WhatsApp integration disabled (WHATSAPP_ENABLED=false); skipping account startup');
   }
 
+  // Best-effort periodic purge of archived deleted-message text past each
+  // group's configured retention window — see
+  // src/whatsapp/archive/retentionSweep.ts. Supabase-only, same as every
+  // other Phase 4+ feature; a no-op (never started) in local file-storage
+  // mode.
+  const stopRetentionSweep = config.supabase.configured
+    ? startRetentionSweep(
+        new GroupsRepository(getSupabaseClient()),
+        new MessagesRepository(getSupabaseClient()),
+        logger,
+      )
+    : undefined;
+
   let shuttingDown = false;
 
   const shutdown = (signal: string) => {
@@ -55,6 +71,7 @@ function main() {
     shuttingDown = true;
 
     logger.info({ signal }, 'Shutting down');
+    stopRetentionSweep?.();
 
     // Stop accepting new WhatsApp connection attempts and close every
     // account's socket (without logging any of them out) before closing
