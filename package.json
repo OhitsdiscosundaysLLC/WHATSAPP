@@ -20,6 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "@whiskeysockets/baileys": "^6.7.24",
     "cookie-parser": "^1.4.7",
     "dotenv": "^18.0.5",

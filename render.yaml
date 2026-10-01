@@ -33,10 +33,12 @@ services:
 
       - key: WHATSAPP_ENABLED
         value: 'true'
-      # NOT durable across redeploys/restarts on Render's ephemeral
-      # filesystem — every WhatsApp account will need re-pairing after a
-      # redeploy until Phase 3 ships a Supabase-backed auth provider.
-      # See docs/DECISIONS.md ADR-006 and docs/DEPLOYMENT.md.
+      # Local-file fallback path, only actually used when SUPABASE_URL /
+      # SUPABASE_SERVICE_ROLE_KEY below are left unset. On Render's
+      # ephemeral filesystem that fallback does NOT survive a redeploy —
+      # set the three Supabase variables below for durable, no-re-scan
+      # session storage. See docs/DECISIONS.md ADR-006/ADR-011 and
+      # docs/DEPLOYMENT.md.
       - key: WHATSAPP_AUTH_DIR
         value: ./auth
       - key: WHATSAPP_RECONNECT_BASE_MS
@@ -49,10 +51,17 @@ services:
       - key: DASHBOARD_ADMIN_PASSWORD
         sync: false
 
-      # Not used yet (Phase 3+ / Phase 6+) — left unset is fine for now.
+      # Required together for durable WhatsApp session storage (Phase 3).
+      # Set all three manually in Render's dashboard, or every WhatsApp
+      # account will need re-pairing after each redeploy. See
+      # docs/DEPLOYMENT.md "Durable session storage (Supabase)" and
+      # docs/SECURITY.md for what each one does and the consequences of
+      # losing WHATSAPP_AUTH_ENCRYPTION_KEY.
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: WHATSAPP_AUTH_ENCRYPTION_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false

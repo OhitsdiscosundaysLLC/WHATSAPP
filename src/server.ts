@@ -1,7 +1,12 @@
 import cookieParser from 'cookie-parser';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { config } from './config/config';
-import { getHealthReport, getReadiness } from './services/healthService';
+import type { DatabaseHealth } from './db/supabaseClient';
+import {
+  type AuthPersistenceStatus,
+  getHealthReport,
+  getReadiness,
+} from './services/healthService';
 import { createChildLogger } from './services/logger';
 import { createAccountRouter } from './web/accountRoutes';
 import { createAuthRouter } from './web/authRoutes';
@@ -12,9 +17,15 @@ const log = createChildLogger('http');
 
 export interface ServerDeps {
   getWhatsAppStatus: () => WhatsAppStatus;
+  getDatabaseHealth: () => Promise<DatabaseHealth>;
+  getAuthPersistence: () => AuthPersistenceStatus;
 }
 
-export function createServer({ getWhatsAppStatus }: ServerDeps) {
+export function createServer({
+  getWhatsAppStatus,
+  getDatabaseHealth,
+  getAuthPersistence,
+}: ServerDeps) {
   const app = express();
 
   app.disable('x-powered-by');
@@ -31,11 +42,17 @@ export function createServer({ getWhatsAppStatus }: ServerDeps) {
   app.use(cookieParser());
 
   // Liveness: is the Node process itself up? Always 200 while the server is
-  // running, even if WhatsApp is reconnecting — Render's health check
-  // should point here, not at /ready (see docs/ARCHITECTURE.md). Public,
-  // unauthenticated, and never includes QR/credentials — see docs/SECURITY.md.
-  app.get('/health', (_req: Request, res: Response) => {
-    const report = getHealthReport({ whatsapp: getWhatsAppStatus() });
+  // running, even if WhatsApp is reconnecting or Supabase is unreachable —
+  // Render's health check should point here, not at /ready (see
+  // docs/ARCHITECTURE.md). Public, unauthenticated, and never includes
+  // QR/credentials/encryption keys/Supabase keys — see docs/SECURITY.md.
+  app.get('/health', async (_req: Request, res: Response) => {
+    const database = await getDatabaseHealth();
+    const report = getHealthReport({
+      whatsapp: getWhatsAppStatus(),
+      database,
+      authPersistence: getAuthPersistence(),
+    });
     res.status(200).json(report);
   });
 

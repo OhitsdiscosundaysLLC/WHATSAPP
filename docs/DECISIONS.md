@@ -198,7 +198,8 @@ back up. The health endpoint reports the database component as
 
 ## ADR-006: WhatsApp auth-state persistence — abstracted now, durable store deferred to Phase 3
 
-**Status:** Accepted (Phase 2)
+**Status:** Accepted (Phase 2); the Phase 3 durable store this ADR deferred
+is now implemented — see ADR-011.
 
 ### Context
 
@@ -237,9 +238,8 @@ vs "QR required" cheaply.
 
 ### What Phase 3 must provide for production
 
-A second implementation of the same `AuthStateProvider` interface, backed
-by Supabase/Postgres (or another durable, access-controlled store),
-satisfying:
+**Resolved by ADR-011** — a second implementation of the same
+`AuthStateProvider` interface, backed by Supabase/Postgres, satisfying:
 
 - **Durability** across Render restarts/redeploys (the whole point).
 - **Encryption at rest** for the stored credentials/keys — this is
@@ -262,8 +262,12 @@ satisfying:
   session" action that goes through `requestLogout()` rather than direct
   row access.
 
-Until Phase 3 lands, running this bot on Render means re-scanning a QR
-after every restart/redeploy — a known, documented limitation, not a bug.
+Until Phase 3 lands — now shipped, see ADR-011 — running this bot on Render
+without `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/
+`WHATSAPP_AUTH_ENCRYPTION_KEY` configured means re-scanning a QR after
+every restart/redeploy (the `FileAuthStateProvider` fallback remains for
+local development and for anyone who hasn't configured Supabase yet) — a
+known, documented limitation, not a bug.
 
 ### Alternatives considered
 
@@ -493,4 +497,122 @@ Not yet (explicitly deferred, not silently skipped):
   phase needs per-account health in automated monitoring.
 - **The manifest is a flat file, not Supabase** — fine at today's scale
   (one owner, a handful of accounts), and explicitly not the Phase 3
-  database work pulled forward.
+  database work pulled forward. **Resolved in Phase 3 / ADR-011**: the JSON
+  manifest (`JsonManifestAccountStore`) remains the local-development
+  implementation, but production now uses `SupabaseAccountStore` behind the
+  same `AccountStore` interface, selected automatically alongside the
+  Supabase-backed auth provider.
+
+---
+
+## ADR-011: Durable WhatsApp session persistence — Supabase-backed `AuthStateProvider` + `AccountStore`
+
+**Status:** Accepted (Phase 3)
+
+### Context
+
+ADR-006 deferred the production-durable implementation of
+`AuthStateProvider` to Phase 3, and ADR-010 deferred replacing the JSON
+account manifest with a real database for the same reason. Both gaps have
+the same root cause: Render's filesystem is ephemeral, so anything that
+must survive a redeploy has to live somewhere else. This phase builds that
+"somewhere else."
+
+### Decision
+
+**Storage backend: Supabase/Postgres**, accessed server-side only via
+`@supabase/supabase-js` and the service role key (never shipped to any
+client). Three tables — `whatsapp_accounts`, `whatsapp_auth_credentials`,
+`whatsapp_auth_keys` — created by
+`supabase/migrations/20261001120000_whatsapp_core.sql`. Full schema in
+`docs/DATABASE.md`.
+
+**Two new implementations, selected together, of existing interfaces:**
+
+- `SupabaseAuthStateProvider` implements `AuthStateProvider` exactly as
+  `FileAuthStateProvider` does — the connection manager depends on the
+  interface only, so it cannot tell which one it's talking to.
+- `SupabaseAccountStore` implements a newly-extracted `AccountStore`
+  interface (`src/whatsapp/accountStore.ts`) alongside
+  `JsonManifestAccountStore` (the Phase 2B manifest logic, extracted
+  unchanged into the same interface).
+- `src/whatsapp/authStorageMode.ts`'s `resolveAuthStorageMode()` is the
+  single place that decides which pair gets used, based purely on whether
+  `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are both set. If they're set
+  but `WHATSAPP_AUTH_ENCRYPTION_KEY` is missing/malformed, it throws rather
+  than silently falling back to the file-backed pair — a misconfiguration
+  must be loud, never mistaken for working durability.
+
+**Signal key store shape**: Baileys' `SignalKeyStore.get`/`set`/`clear`
+operate on a category (`pre-key`, `session`, `sender-key`,
+`sender-key-memory`, `app-state-sync-key`, `app-state-sync-version`) and a
+map of `key_id → value`. `whatsapp_auth_keys` mirrors this directly — one
+row per `(account_id, category, key_id)`, composite primary key — rather
+than collapsing it into a single JSON blob per account, because Baileys
+reads/writes individual keys by id (e.g. fetching a handful of pre-keys),
+and a row-per-key layout serves that access pattern without reading or
+rewriting unrelated keys.
+
+**Serialization**: verified against the installed `@whiskeysockets/baileys`
+6.7.24 source (`lib/Utils/use-multi-file-auth-state.js`), not assumed.
+Every category round-trips through Baileys' own `BufferJSON.replacer`/
+`.reviver` (so `Buffer`/`Uint8Array` fields survive JSON serialization
+exactly as `useMultiFileAuthState` already relies on), with exactly one
+additional category-specific step: `app-state-sync-key` values are passed
+through `proto.Message.AppStateSyncKeyData.fromObject()` after the generic
+JSON round-trip, mirroring what Baileys' reference implementation does —
+not an invented step (`src/whatsapp/auth/baileysSerialization.ts`).
+
+**Encryption**: AES-256-GCM, applied in the application layer before any
+value reaches Supabase — see docs/SECURITY.md's "Durable WhatsApp
+auth-state persistence" section for the full model (key format/validation,
+per-operation random IVs, auth-tag verification on decrypt, key-loss
+consequences). Ciphertext/IV/auth-tag are stored as base64 `text` columns,
+not `bytea` — this sidesteps depending on exactly how PostgREST represents
+binary columns over JSON, which the project has no way to verify short of
+testing against a live instance; base64 text round-trips through JSON
+unambiguously regardless.
+
+**Database access control**: RLS enabled on all three tables, with
+**zero** policies for `anon`/`authenticated` — a deliberate default-deny
+posture. Only the service role key, used exclusively server-side, can read
+or write these tables.
+
+**Failure handling**: every `SupabaseAuthStateProvider` method throws on a
+genuine query failure — the only path that returns a blank, unregistered
+identity is a _successful_ query finding no row. This specifically
+prevents a transient Supabase outage from being misread as "no session
+exists," which would otherwise risk an unnecessary new QR prompt or an
+uncontrolled reconnect loop. The one deliberate exception is
+`AccountStore.touchLastConnected()`, which logs and swallows failures
+rather than throwing, since it's a best-effort annotation that must never
+affect the live WhatsApp connection it describes.
+
+### Alternatives considered
+
+- **Supabase Storage (object storage) instead of Postgres rows**: rejected
+  — the signal key store is many small, individually-addressed values
+  (lookup by category + id), which maps naturally onto relational rows with
+  a composite key and an index, not onto object storage's file-like access
+  pattern.
+- **`pgcrypto` / column-level database encryption** instead of
+  application-level encryption: rejected because it would mean the
+  database (and anyone with the service role key or direct SQL access)
+  could decrypt the data, defeating the point of encrypting credentials
+  that are "equivalent to the keys to the linked WhatsApp account" (ADR-006
+  / docs/SECURITY.md). Application-level encryption means only this
+  process, holding `WHATSAPP_AUTH_ENCRYPTION_KEY`, can ever produce
+  plaintext.
+- **One JSON blob per account** (entire signal key store serialized as a
+  single `jsonb`/encrypted column) instead of one row per key: rejected —
+  it would mean reading and rewriting the entire key store on every single
+  key update, and losing the composite-PK-enforced per-account isolation
+  property in favor of an isolation property that depends on application
+  code getting a `WHERE account_id = ...` right every time.
+- **Database trigger for `updated_at`**: considered, but this project's
+  tooling for applying `CREATE FUNCTION`/`CREATE TRIGGER` statements proved
+  unreliable in this environment (repeated timeouts with no underlying
+  database lock contention). Rather than fight the tooling, `updated_at` is
+  set explicitly by application code on every write — one less moving part,
+  and no dependency on a server-side trigger function existing and staying
+  in sync with the application's understanding of when a row changed.

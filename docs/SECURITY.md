@@ -144,9 +144,87 @@ accordingly:
   reconnect-decision table. `requestLogout()` is reachable only from the
   authenticated dashboard's "Disconnect"/"Remove" actions
   (`src/web/accountRoutes.ts`) — see the dashboard security section below.
-- **Production durability and encryption at rest** are explicitly not
-  solved by `FileAuthStateProvider` — see docs/DECISIONS.md ADR-006 for
-  what the Phase 3 Supabase-backed provider must additionally guarantee.
+- **Production durability and encryption at rest**: `FileAuthStateProvider`
+  (local disk, ephemeral on Render) remains the development default; the
+  Phase 3 `SupabaseAuthStateProvider` is the production-durable alternative
+  — see the next section for what it actually guarantees, and
+  docs/DECISIONS.md ADR-006/ADR-011 for the design rationale.
+
+## Durable WhatsApp auth-state persistence (Phase 3: Supabase + encryption)
+
+`src/whatsapp/auth/supabaseAuthStateProvider.ts` implements the same
+`AuthStateProvider` interface as `FileAuthStateProvider` (the connection
+manager cannot tell which one it's talking to), backed by three Supabase
+tables (`whatsapp_accounts`, `whatsapp_auth_credentials`,
+`whatsapp_auth_keys` — see `docs/DATABASE.md`). It is selected automatically
+when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are both set
+(`src/whatsapp/authStorageMode.ts`); otherwise the app falls back to
+`FileAuthStateProvider`.
+
+**Encryption at rest (`src/db/encryption.ts`):**
+
+- Every credential/key value is encrypted with **AES-256-GCM** before it
+  leaves the application process — the database only ever stores
+  ciphertext, an IV, and an auth tag (each base64-encoded `text`), never
+  plaintext.
+- The key is `WHATSAPP_AUTH_ENCRYPTION_KEY`: exactly 64 hex characters (32
+  bytes), read only from the environment, strictly validated at the point
+  of use (`parseEncryptionKey()` rejects anything unset, empty, the wrong
+  length, or containing non-hex characters — it never silently truncates or
+  pads a malformed value).
+- A **fresh random 12-byte IV is generated on every single encryption
+  call** — nonces are never reused, which is the property GCM's security
+  depends on.
+- GCM's 16-byte authentication tag is verified on every decrypt;
+  `decryptBuffer`/`decryptJson` throw on any tampering (ciphertext, IV, or
+  tag) rather than returning corrupted or partial plaintext.
+- `WHATSAPP_AUTH_ENCRYPTION_KEY` is in `src/services/logger.ts`'s redact
+  list (`*.encryptionKey`, `*.authEncryptionKey`), alongside `*.ciphertext`,
+  so even a bound-logger field accidentally carrying one is scrubbed.
+
+**Key-loss consequences — stated plainly, not glossed over:** this key is
+the _only_ thing that can decrypt stored credentials and signal keys. There
+is no recovery path, no backdoor, and no "reset" that preserves the data —
+losing it is equivalent to losing the WhatsApp session entirely, for every
+account stored under it. **If it is lost, every connected WhatsApp account
+must be re-paired from scratch.** It must never be committed to the
+repository, logged, or exposed via any HTTP endpoint. Treat it the same way
+you'd treat a disk-encryption key: generated once, stored in a secrets
+manager (Render's Environment tab, a password manager — anywhere other than
+the codebase), and never rotated casually, since rotating it without a
+migration step makes every existing encrypted row unreadable too.
+
+**Failure handling — never silently degrade:**
+
+- If Supabase is configured (`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` both
+  set) but `WHATSAPP_AUTH_ENCRYPTION_KEY` is missing or malformed,
+  `resolveAuthStorageMode()` throws rather than quietly falling back to the
+  non-durable file provider — a misconfiguration must be visible (surfaced
+  through account-creation errors and `/health`), never mistaken for
+  "durable storage is working."
+- `SupabaseAuthStateProvider` throws on a genuine Supabase query failure
+  (network error, RLS/permission error, etc.) in every method — the _only_
+  path that returns a blank, unregistered identity from `load()` is a
+  successful query that legitimately found no row. A transient Supabase
+  outage can never be misread as "this account was never paired," which
+  would otherwise risk generating an unnecessary new QR code and forcing a
+  needless re-pairing, or worse, clobbering a real session.
+- `AccountStore.touchLastConnected()` is the one deliberate exception: a
+  failure there is logged and swallowed, never thrown, because a failed
+  "last connected" timestamp update must not affect the live WhatsApp
+  connection it's merely annotating.
+
+**Database access control:** Row Level Security is enabled on all three
+tables with no policies for `anon`/`authenticated` — default-deny. Only the
+service role key (server-side only, bypasses RLS by design) can read or
+write them; see `docs/DATABASE.md`.
+
+**Multi-account isolation:** `whatsapp_auth_keys`'s primary key is the
+composite `(account_id, category, key_id)` — every row is explicitly scoped
+to one account, so it is structurally impossible (not just
+application-logic-enforced) for one account's signal keys to be read
+alongside or overwritten by another's. Covered by an automated test
+(`src/whatsapp/auth/supabaseAuthStateProvider.test.ts`).
 
 ## Web dashboard authentication (Phase 2B)
 
@@ -215,7 +293,7 @@ enforced:
 - A pairing code is likewise scoped to `PairingSnapshot` only, cleared on
   the same lifecycle events as the QR.
 
-## What's actually enforced in code today (Phases 1-2B)
+## What's actually enforced in code today (Phases 1-3)
 
 - Config loading never logs secret values (`src/config/config.ts`,
   `src/services/logger.ts`).
@@ -223,13 +301,21 @@ enforced:
   directories, including the WhatsApp auth directory in active use since
   Phase 2.
 - The health endpoint reports real component status (including the actual
-  WhatsApp connection state) rather than claiming integrations work before
-  they're implemented, and never leaks WhatsApp authentication material
-  (see above) — verified by an automated test (`src/server.test.ts`).
+  WhatsApp connection state, real Supabase database health, and which auth
+  storage mode is active) rather than claiming integrations work before
+  they're implemented, and never leaks WhatsApp authentication material,
+  ciphertext, or the encryption key (see above) — verified by automated
+  tests (`src/server.test.ts`, `src/services/healthService.test.ts`).
 - The dashboard and its account-management API are unreachable without a
   valid owner session; every mutating endpoint additionally requires a
   matching CSRF token — both enforced by middleware, not left to each
   route handler to remember, and both covered by automated tests.
-- No message content is read, stored, or acted upon yet — Phase 2B only
-  adds connection/account management; `handlers/`, `rules/`, `commands/`,
-  and `moderation/` still don't exist.
+- WhatsApp credentials and signal keys are encrypted (AES-256-GCM) before
+  storage whenever Supabase-backed persistence is active, with strict key
+  validation and fail-loud behavior on misconfiguration or query failure —
+  see "Durable WhatsApp auth-state persistence" above, covered by automated
+  tests including a process-restart simulation
+  (`src/whatsapp/auth/supabaseAuthStateProvider.test.ts`).
+- No message content is read, stored, or acted upon yet — Phases 2B-3 only
+  add connection/account management and durable session persistence;
+  `handlers/`, `rules/`, `commands/`, and `moderation/` still don't exist.

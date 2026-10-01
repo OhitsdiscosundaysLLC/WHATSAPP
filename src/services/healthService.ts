@@ -1,11 +1,13 @@
 import { config } from '../config/config';
+import type { DatabaseHealth } from '../db/supabaseClient';
 import type { WhatsAppStatus } from '../whatsapp/types';
 
 export type ComponentStatus = 'ok' | 'degraded' | 'down' | 'not_implemented';
 
-export interface ComponentHealth {
-  status: ComponentStatus;
-  detail?: string;
+export interface AuthPersistenceStatus {
+  mode: 'file' | 'supabase' | 'unknown';
+  durable: boolean;
+  error?: string;
 }
 
 export interface WhatsAppComponentHealth {
@@ -15,6 +17,14 @@ export interface WhatsAppComponentHealth {
   reconnectAttempt: number;
   lastConnectedAt?: string | undefined;
   lastDisconnectedAt?: string | undefined;
+  /**
+   * Whether WhatsApp auth state is actually durable right now (Supabase)
+   * or ephemeral (local filesystem) — see docs/DECISIONS.md ADR-011.
+   * Always surfaced, never hidden, so a misconfigured production
+   * deployment is visible here rather than silently running ephemeral
+   * storage. See docs/SECURITY.md.
+   */
+  authPersistence: AuthPersistenceStatus;
 }
 
 export interface HealthReport {
@@ -24,39 +34,41 @@ export interface HealthReport {
   uptimeSeconds: number;
   timestamp: string;
   components: {
-    database: ComponentHealth;
+    database: DatabaseHealth;
     whatsapp: WhatsAppComponentHealth;
   };
 }
 
 export interface HealthReportDeps {
   whatsapp: WhatsAppStatus;
+  database: DatabaseHealth;
+  authPersistence: AuthPersistenceStatus;
 }
 
 /**
- * Reports real, honest status for each subsystem. The caller supplies the
- * live WhatsApp connection state (see src/server.ts) rather than this
- * module reaching into the WhatsApp singleton itself, so it stays a plain,
- * easily-testable composition function. Database remains `not_implemented`
- * until Phase 3 — see docs/DECISIONS.md (ADR-005).
+ * Reports real, honest status for each subsystem. The caller supplies live
+ * state (see src/server.ts) rather than this module reaching into
+ * singletons itself, so it stays a plain, easily-testable composition
+ * function.
  *
- * Never includes QR contents, credentials, keys, auth file paths, or any
- * WhatsApp account metadata beyond the connection state machine.
+ * Never includes QR contents, credentials, keys, encryption keys, auth
+ * file paths, Supabase project URLs/keys, or any WhatsApp account
+ * metadata beyond the connection state machine — see docs/SECURITY.md.
  */
-export function getHealthReport({ whatsapp }: HealthReportDeps): HealthReport {
+export function getHealthReport({
+  whatsapp,
+  database,
+  authPersistence,
+}: HealthReportDeps): HealthReport {
   const components: HealthReport['components'] = {
-    database: {
-      status: 'not_implemented',
-      detail: config.supabase.configured
-        ? 'Supabase credentials are configured, but the Phase 3 database integration is not implemented yet.'
-        : 'Supabase credentials are not configured. Database integration lands in Phase 3.',
-    },
+    database,
     whatsapp: {
       status: whatsapp.state,
       detail: whatsapp.detail,
       reconnectAttempt: whatsapp.reconnectAttempt,
       lastConnectedAt: whatsapp.lastConnectedAt,
       lastDisconnectedAt: whatsapp.lastDisconnectedAt,
+      authPersistence,
     },
   };
 

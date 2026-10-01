@@ -21,7 +21,16 @@ beforeAll(async () => {
 
   const { createServer } = await import('./server');
   const { accountManager } = await import('./whatsapp/accountManager');
-  app = createServer({ getWhatsAppStatus: () => accountManager.getAggregateStatus() });
+  const { checkDatabaseHealth } = await import('./db/supabaseClient');
+  app = createServer({
+    getWhatsAppStatus: () => accountManager.getAggregateStatus(),
+    getDatabaseHealth: () => checkDatabaseHealth(),
+    getAuthPersistence: () => accountManager.getStorageStatus(),
+  });
+
+  // Resolve the storage mode deterministically up front, rather than
+  // leaving it to whichever test happens to run first.
+  await accountManager.load();
 });
 
 afterAll(async () => {
@@ -43,13 +52,27 @@ describe('GET /health', () => {
     await request(app).get('/health').expect(200);
   });
 
-  it('never includes qr, pairingCode, credentials, or account identifiers', async () => {
+  it('never includes qr, pairingCode, credentials, keys, or Supabase secrets', async () => {
     const res = await request(app).get('/health').expect(200);
     const text = JSON.stringify(res.body);
     expect(text).not.toMatch(/qr/i);
     expect(text).not.toMatch(/pairingCode/i);
     expect(text).not.toMatch(/password/i);
+    expect(text).not.toMatch(/ciphertext/i);
+    expect(text).not.toMatch(/encryptionKey/i);
+    expect(text).not.toMatch(/^eyJ/); // a real Supabase JWT-shaped key, not just the env var's name
     expect(res.body.components.whatsapp).not.toHaveProperty('qr');
+  });
+
+  it('reports database as not_configured in this test environment (no SUPABASE_URL set)', async () => {
+    const res = await request(app).get('/health').expect(200);
+    expect(res.body.components.database.status).toBe('not_configured');
+  });
+
+  it('reports WhatsApp auth persistence mode (file, since Supabase is not configured here)', async () => {
+    const res = await request(app).get('/health').expect(200);
+    expect(res.body.components.whatsapp.authPersistence.mode).toBe('file');
+    expect(res.body.components.whatsapp.authPersistence.durable).toBe(false);
   });
 });
 

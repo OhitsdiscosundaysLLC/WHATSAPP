@@ -1,4 +1,5 @@
 import { config } from './config/config';
+import { checkDatabaseHealth } from './db/supabaseClient';
 import { logger } from './services/logger';
 import { createServer } from './server';
 import { accountManager } from './whatsapp/accountManager';
@@ -24,7 +25,11 @@ function main() {
     );
   }
 
-  const app = createServer({ getWhatsAppStatus: () => accountManager.getAggregateStatus() });
+  const app = createServer({
+    getWhatsAppStatus: () => accountManager.getAggregateStatus(),
+    getDatabaseHealth: () => checkDatabaseHealth(),
+    getAuthPersistence: () => accountManager.getStorageStatus(),
+  });
 
   // Bind the HTTP server first (explicitly on all interfaces, as Render and
   // most PaaS hosts require) so health checks are available immediately,
@@ -37,6 +42,9 @@ function main() {
   if (config.whatsapp.enabled) {
     void accountManager.startAll();
   } else {
+    // Still load the account registry (so the dashboard can list existing
+    // accounts) — just skip actually connecting any of them.
+    void accountManager.load();
     logger.info('WhatsApp integration disabled (WHATSAPP_ENABLED=false); skipping account startup');
   }
 

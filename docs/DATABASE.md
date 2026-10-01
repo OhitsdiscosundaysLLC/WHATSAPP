@@ -1,8 +1,82 @@
 # Database Design (Supabase / Postgres)
 
-**Status:** design reference for Phase 3+. No migrations exist yet; Phase 1
-ships no database connection. This document exists now so later phases build
+**Status:** the "Implemented" section below (WhatsApp account + auth-state
+persistence) is real and live as of Phase 3 — migration
+`supabase/migrations/20261001120000_whatsapp_core.sql`. Everything under
+"Minimum viable schema (target for Phase 5+)" further down is still a design
+reference for later phases (group config, rules, moderation, AI usage) —
+no migration exists for it yet. This document exists so later phases build
 toward a consistent schema instead of improvising table-by-table.
+
+## Implemented (Phase 3): WhatsApp account + auth-state persistence
+
+Three tables, applied via
+`supabase/migrations/20261001120000_whatsapp_core.sql`. Full rationale in
+`docs/DECISIONS.md` ADR-011; encryption details in `docs/SECURITY.md`.
+
+**Design choices that apply to all three tables:**
+
+- Every sensitive column (`ciphertext`, `iv`, `auth_tag`) is base64-encoded
+  `text`, not `bytea` — this avoids depending on exactly how PostgREST
+  represents binary columns over JSON. The database only ever stores
+  ciphertext; plaintext credentials/keys never reach Postgres.
+- Row Level Security is enabled on all three tables with **no** policies for
+  `anon` or `authenticated` — default-deny. Only the `service_role` key
+  (server-side only, bypasses RLS by design) can read or write them.
+- `updated_at` is set explicitly by application code on every write, not by
+  a database trigger (one less moving part).
+
+### `whatsapp_accounts`
+
+Durable account registry — replaces the Phase 2B JSON manifest in
+production. Deliberately holds only durable config, never transient
+connection state (connecting/reconnecting/QR), which stays in
+`WhatsAppConnectionManager`'s memory and is reported live via SSE.
+
+| column            | type                 | notes               |
+| ----------------- | -------------------- | ------------------- |
+| id                | uuid pk              | `gen_random_uuid()` |
+| label             | text                 | 1–60 chars          |
+| enabled           | boolean default true |                     |
+| created_at        | timestamptz          |                     |
+| updated_at        | timestamptz          |                     |
+| last_connected_at | timestamptz nullable |                     |
+
+### `whatsapp_auth_credentials`
+
+One row per account: the encrypted Baileys `AuthenticationCreds` object
+(identity keys, registration id, `advSecretKey`, etc.).
+
+| column      | type                                                  | notes                            |
+| ----------- | ----------------------------------------------------- | -------------------------------- |
+| account_id  | uuid pk, fk → whatsapp_accounts.id, on delete cascade |                                  |
+| ciphertext  | text                                                  | base64 AES-256-GCM ciphertext    |
+| iv          | text                                                  | base64, 12 bytes                 |
+| auth_tag    | text                                                  | base64, 16 bytes                 |
+| key_version | smallint default 1                                    | reserved for future key rotation |
+| updated_at  | timestamptz                                           |                                  |
+
+### `whatsapp_auth_keys`
+
+The Baileys signal key store — pre-keys, sessions, sender keys,
+app-state-sync keys/versions. One row per `(account_id, category, key_id)`,
+relationally mirroring Baileys' own `useMultiFileAuthState` file-naming
+scheme (`${category}-${id}.json`).
+
+| column      | type                                               | notes                                                                                                                                             |
+| ----------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| account_id  | uuid, fk → whatsapp_accounts.id, on delete cascade | part of composite pk                                                                                                                              |
+| category    | text                                               | one of Baileys' `SignalDataTypeMap` keys: `pre-key`, `session`, `sender-key`, `sender-key-memory`, `app-state-sync-key`, `app-state-sync-version` |
+| key_id      | text                                               | part of composite pk                                                                                                                              |
+| ciphertext  | text                                               | base64 AES-256-GCM ciphertext                                                                                                                     |
+| iv          | text                                               | base64, 12 bytes                                                                                                                                  |
+| auth_tag    | text                                               | base64, 16 bytes                                                                                                                                  |
+| key_version | smallint default 1                                 |                                                                                                                                                   |
+| updated_at  | timestamptz                                        |                                                                                                                                                   |
+| **pk**      |                                                    | `(account_id, category, key_id)` — enforces per-account isolation at the schema level                                                             |
+
+Index: `(account_id, category)`, supporting bulk category reads (Baileys
+requests keys as `get(category, ids[])`) and account-removal cleanup.
 
 ## Design principles
 
@@ -23,10 +97,11 @@ toward a consistent schema instead of improvising table-by-table.
   server-side only — RLS doesn't gate that key, so policies are not a
   substitute for keeping the service key off any client surface.
 
-## Minimum viable schema (target for Phase 3)
+## Minimum viable schema (target for Phase 5+)
 
-This is the planned Phase 3 schema, documented here for continuity — **not
-created in Phase 1**.
+This is the planned schema for group configuration, rules, moderation, and
+AI usage — documented here for continuity. **Not created yet**; Phase 3
+only implemented the WhatsApp account/auth-state tables documented above.
 
 ### `admins`
 
@@ -198,15 +273,15 @@ Documented so they aren't forgotten, not because they're needed yet:
   (view-once captures, archived deleted-message attachments), with explicit
   retention/expiry columns. Needs the retention policy from
   `docs/SECURITY.md` nailed down before the schema is finalized.
-- `sessions` — if WhatsApp auth-state persistence moves into Postgres
-  (vs. object storage), this holds encrypted credential/key material. Needs
-  its encryption-at-rest approach decided first (see ADR-001 consequences).
+- ~~`sessions`~~ — **implemented in Phase 3** as `whatsapp_auth_credentials` +
+  `whatsapp_auth_keys` (see "Implemented (Phase 3)" above), not as a single
+  table — Baileys' auth state splits naturally into "one row of creds" and
+  "many rows of signal keys", so the schema follows that shape directly.
 - `ai_conversations` — only needed once a feature requires multi-turn AI
   context rather than single-shot classification/generation calls.
 
-## Open questions for Phase 3
+## Open questions for Phase 5+
 
 - Exact `jsonb` shape for `group_rules.config` per trigger type (needs at
   least the `response_threshold` shape worked out for the 5-person rule
   example before Phase 5).
-- Whether WhatsApp auth state belongs in Postgres or Supabase Storage.

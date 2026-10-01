@@ -26,6 +26,10 @@ const envSchema = z.object({
     ),
   WHATSAPP_RECONNECT_BASE_MS: z.coerce.number().int().positive().default(2000),
   WHATSAPP_RECONNECT_MAX_MS: z.coerce.number().int().positive().default(60_000),
+  // Format/length validated lazily by src/db/encryption.ts's
+  // parseEncryptionKey() — only actually required when Supabase is
+  // configured (see src/whatsapp/authStorageMode.ts ADR-011/013).
+  WHATSAPP_AUTH_ENCRYPTION_KEY: z.string().optional().or(z.literal('')),
 
   APP_VERSION: z.string().optional().or(z.literal('')),
 
@@ -82,6 +86,7 @@ function loadConfig() {
       authDir: env.WHATSAPP_AUTH_DIR,
       reconnectBaseMs: env.WHATSAPP_RECONNECT_BASE_MS,
       reconnectMaxMs: env.WHATSAPP_RECONNECT_MAX_MS,
+      authEncryptionKey: env.WHATSAPP_AUTH_ENCRYPTION_KEY || undefined,
     },
 
     authorization: {
