@@ -128,6 +128,17 @@
       label: 'Dry Run',
       help: 'Evaluate rules normally, but log "would have done X" instead of actually sending/moderating. See Activity for what it would have done.',
     },
+    { key: 'vip', label: 'VIP', help: 'Label only — never changes any automation behavior.' },
+    {
+      key: 'neverAutoReply',
+      label: 'Never Auto Reply',
+      help: 'Overrides every auto-reply rule for this group, even if one would otherwise match.',
+    },
+    {
+      key: 'neverModerate',
+      label: 'Never Moderate',
+      help: 'Overrides every moderation rule for this group, even if one would otherwise match.',
+    },
   ];
   const generalToggles = document.getElementById('general-toggles');
   const settingsError = document.getElementById('settings-error');
@@ -156,6 +167,9 @@
   function renderGeneral(settings) {
     renderGeneralToggles(settings);
     document.getElementById('group-instructions').value = settings.customGroupInstructions || '';
+    document.getElementById('owner-notes').value = settings.ownerNotes || '';
+    renderQuietHours(settings);
+    renderTakeoverStatus(settings);
   }
 
   document.getElementById('save-instructions-btn').addEventListener('click', async (event) => {
@@ -169,6 +183,148 @@
       flashSaved(event.currentTarget);
     } catch (err) {
       if (err.message !== 'unauthenticated') settingsError.textContent = 'Could not save.';
+    }
+  });
+
+  document.getElementById('save-owner-notes-btn').addEventListener('click', async (event) => {
+    settingsError.textContent = '';
+    try {
+      renderGeneral(
+        await patchSettings({ ownerNotes: document.getElementById('owner-notes').value }),
+      );
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated') settingsError.textContent = 'Could not save.';
+    }
+  });
+
+  // ---------- Quiet Hours ----------
+
+  const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const quietHoursError = document.getElementById('quiet-hours-error');
+
+  function minutesToTimeInput(minutes) {
+    if (minutes == null) return '';
+    const h = Math.floor(minutes / 60)
+      .toString()
+      .padStart(2, '0');
+    const m = (minutes % 60).toString().padStart(2, '0');
+    return h + ':' + m;
+  }
+
+  function timeInputToMinutes(value) {
+    if (!value) return undefined;
+    const [h, m] = value.split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  function renderQuietHours(settings) {
+    document.getElementById('quiet-hours-enabled').checked = Boolean(settings.quietHoursEnabled);
+    document.getElementById('quiet-hours-timezone').value = settings.quietHoursTimezone || '';
+    document.getElementById('quiet-hours-start').value = minutesToTimeInput(
+      settings.quietHoursStartMinutes,
+    );
+    document.getElementById('quiet-hours-end').value = minutesToTimeInput(
+      settings.quietHoursEndMinutes,
+    );
+    const daysContainer = document.getElementById('quiet-hours-days');
+    daysContainer.innerHTML = '';
+    const selectedDays = new Set(settings.quietHoursDays || []);
+    DAY_LABELS.forEach((label, index) => {
+      const wrap = document.createElement('label');
+      wrap.style.display = 'flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '4px';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = selectedDays.has(index);
+      input.dataset.day = String(index);
+      wrap.appendChild(input);
+      wrap.appendChild(document.createTextNode(label));
+      daysContainer.appendChild(wrap);
+    });
+  }
+
+  document.getElementById('save-quiet-hours-btn').addEventListener('click', async (event) => {
+    quietHoursError.textContent = '';
+    try {
+      const days = Array.from(
+        document.querySelectorAll('#quiet-hours-days input[type="checkbox"]:checked'),
+      ).map((el) => Number(el.dataset.day));
+      renderGeneral(
+        await patchSettings({
+          quietHoursEnabled: document.getElementById('quiet-hours-enabled').checked,
+          quietHoursTimezone: document.getElementById('quiet-hours-timezone').value || null,
+          quietHoursDays: days,
+          quietHoursStartMinutes: timeInputToMinutes(
+            document.getElementById('quiet-hours-start').value,
+          ),
+          quietHoursEndMinutes: timeInputToMinutes(
+            document.getElementById('quiet-hours-end').value,
+          ),
+        }),
+      );
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated') quietHoursError.textContent = 'Could not save.';
+    }
+  });
+
+  // ---------- Human Takeover ----------
+
+  const takeoverError = document.getElementById('takeover-error');
+  const takeoverStatus = document.getElementById('takeover-status');
+
+  function renderTakeoverStatus(settings) {
+    if (settings.humanTakeoverUntil && new Date(settings.humanTakeoverUntil) > new Date()) {
+      takeoverStatus.textContent =
+        'HUMAN TAKEOVER ACTIVE until ' + fmtDate(settings.humanTakeoverUntil);
+      takeoverStatus.style.color = 'var(--accent, #d97706)';
+    } else {
+      takeoverStatus.textContent = 'Automation active (no takeover in effect).';
+      takeoverStatus.style.color = '';
+    }
+  }
+
+  async function startTakeover(durationMinutes) {
+    takeoverError.textContent = '';
+    try {
+      const res = await api('/api/groups/' + groupId + '/human-takeover', {
+        method: 'POST',
+        body: JSON.stringify({ durationMinutes }),
+      });
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      currentSettings = data.settings;
+      renderGeneral(data.settings);
+    } catch (err) {
+      if (err.message !== 'unauthenticated')
+        takeoverError.textContent = 'Could not start takeover.';
+    }
+  }
+
+  document.querySelectorAll('[data-takeover-minutes]').forEach((btn) => {
+    btn.addEventListener('click', () => startTakeover(Number(btn.dataset.takeoverMinutes)));
+  });
+
+  document.getElementById('takeover-custom-btn').addEventListener('click', () => {
+    const minutes = Number(document.getElementById('takeover-custom-minutes').value);
+    if (minutes > 0) startTakeover(minutes);
+  });
+
+  document.getElementById('takeover-resume-btn').addEventListener('click', async () => {
+    takeoverError.textContent = '';
+    try {
+      const res = await api('/api/groups/' + groupId + '/human-takeover', {
+        method: 'POST',
+        body: JSON.stringify({ resume: true }),
+      });
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      currentSettings = data.settings;
+      renderGeneral(data.settings);
+    } catch (err) {
+      if (err.message !== 'unauthenticated') takeoverError.textContent = 'Could not resume.';
     }
   });
 

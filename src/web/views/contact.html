@@ -92,6 +92,79 @@
                 Save
               </button>
             </div>
+
+            <div style="margin-top: 16px">
+              <label class="field-label" for="owner-notes">Owner notes</label>
+              <p class="muted" style="font-size: 12px; margin: 0 0 6px">
+                Private notes for your own reference — never sent anywhere, never read by any
+                automation.
+              </p>
+              <textarea id="owner-notes" placeholder="e.g. VIP customer, prefers calls."></textarea>
+              <button class="btn btn-sm" id="save-owner-notes-btn" style="margin-top: 8px">
+                Save
+              </button>
+            </div>
+          </section>
+
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Quiet Hours</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Suppresses auto-reply during the configured window, evaluated in the timezone below
+              (never the server's timezone). Supports overnight ranges (e.g. 17:00-09:00).
+            </p>
+            <div id="quiet-hours-error" class="error-text"></div>
+            <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px">
+              <input type="checkbox" id="quiet-hours-enabled" />
+              <span>Enabled</span>
+            </label>
+            <div class="field-row" style="margin-bottom: 10px">
+              <div>
+                <label class="field-label" for="quiet-hours-timezone">IANA timezone</label>
+                <input type="text" id="quiet-hours-timezone" placeholder="e.g. America/New_York" />
+              </div>
+              <div>
+                <label class="field-label" for="quiet-hours-start">Start (local time)</label>
+                <input type="time" id="quiet-hours-start" />
+              </div>
+              <div>
+                <label class="field-label" for="quiet-hours-end">End (local time)</label>
+                <input type="time" id="quiet-hours-end" />
+              </div>
+            </div>
+            <div style="margin-bottom: 10px">
+              <label class="field-label">Days</label>
+              <div id="quiet-hours-days" style="display: flex; gap: 10px; flex-wrap: wrap"></div>
+            </div>
+            <button class="btn btn-sm" id="save-quiet-hours-btn">Save</button>
+          </section>
+
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Human Takeover</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Temporarily suppresses auto-reply for this chat — monitoring/archiving and owner
+              commands keep working.
+            </p>
+            <div id="takeover-error" class="error-text"></div>
+            <div id="takeover-status" style="margin-bottom: 10px; font-weight: 600"></div>
+            <div id="takeover-controls" style="display: flex; gap: 8px; flex-wrap: wrap">
+              <button class="btn btn-sm" data-takeover-minutes="30">30 min</button>
+              <button class="btn btn-sm" data-takeover-minutes="60">1 hour</button>
+              <input
+                type="number"
+                id="takeover-custom-minutes"
+                placeholder="Custom minutes"
+                style="width: 140px"
+                min="1"
+              />
+              <button class="btn btn-sm" id="takeover-custom-btn">Start</button>
+              <button class="btn btn-sm btn-ghost" id="takeover-resume-btn">
+                Resume automation
+              </button>
+            </div>
           </section>
         </section>
 

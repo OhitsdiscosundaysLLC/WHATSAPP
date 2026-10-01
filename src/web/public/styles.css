@@ -100,7 +100,9 @@ button {
 
 input[type='text'],
 input[type='password'],
-input[type='tel'] {
+input[type='tel'],
+input[type='time'],
+input[type='number'] {
   width: 100%;
   padding: 11px 13px;
   border-radius: var(--radius);
@@ -656,6 +658,17 @@ label.field-label {
   font-weight: 600;
   margin-bottom: 6px;
   color: var(--text-muted);
+}
+
+.field-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.field-row > div {
+  flex: 1 1 160px;
+  min-width: 140px;
 }
 
 /* ---------- Activity ---------- */
