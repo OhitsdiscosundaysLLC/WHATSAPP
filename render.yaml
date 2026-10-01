@@ -22,7 +22,18 @@ services:
     # dashboard if you just want to try the dashboard UI without a
     # persistent WhatsApp connection; see docs/DEPLOYMENT.md.
     plan: starter
-    buildCommand: npm install && npm run build
+    # `--include=dev`: NODE_ENV=production (set below) makes plain `npm
+    # install` skip devDependencies, which includes `typescript` — the
+    # build step then falls back to whatever stray/global `tsc` the build
+    # image happens to provide, which is NOT the version this project is
+    # tested against and can reject this project's tsconfig outright
+    # (hit in practice: a bare `npm install` resolved a `tsc` new enough
+    # to hard-error on `moduleResolution: "node"`, which the pinned
+    # devDependency version accepts fine). `--include=dev` forces the
+    # exact, tested toolchain from package-lock.json regardless of
+    # NODE_ENV, without changing NODE_ENV itself (still "production" for
+    # the app's own runtime behavior).
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
     envVars:
