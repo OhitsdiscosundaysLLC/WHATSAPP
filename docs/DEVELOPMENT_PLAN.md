@@ -17,6 +17,18 @@ before the next begins — this file is updated as phases complete.
       the session. Production-durable auth storage deferred to Phase 3 (see
       docs/DECISIONS.md ADR-006) — still no message/event processing, no
       database, no AI.
+- [x] **Phase 2B — Web pairing dashboard & Render deployment**
+      Multi-account registry (`src/whatsapp/accountManager.ts`, replacing
+      Phase 2's single-account singleton — see ADR-010), an authenticated
+      browser dashboard (`src/web/`: owner login, server-side sessions,
+      CSRF, rate-limited login, SSE-based live QR/status), pairing-code
+      support (verified against Baileys 6.7.24 — see ADR-001's update) as
+      an alternative to scanning a QR, and Render deployment configuration
+      (`render.yaml`, `docs/DEPLOYMENT.md`). The owner can now connect
+      WhatsApp entirely from a browser — no terminal/VS Code required.
+      Session durability across redeploys is still the unsolved Phase 3
+      problem (ADR-006) — the dashboard doesn't change that, it just makes
+      the existing (re-)pairing flow usable without a terminal.
 - [ ] **Phase 3 — Supabase database**
       Wire up `@supabase/supabase-js`, implement the Phase-3 minimum schema
       from `docs/DATABASE.md` as migrations, `services/database.ts`,

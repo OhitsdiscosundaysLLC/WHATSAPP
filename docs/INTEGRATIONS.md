@@ -64,15 +64,28 @@ Not wired up until Phase 6. Every AI call will be logged to `ai_usage`
 
 ## Render (deployment)
 
-Target deployment platform (Phase 14). Implications already reflected in
-earlier decisions:
+Deployment platform, configured in Phase 2B (`render.yaml`) — see
+`docs/DEPLOYMENT.md` for the full, non-developer-oriented setup walkthrough
+and `docs/DECISIONS.md` ADR-007 for why Node runtime over Docker, and why
+the Starter plan over Free. Implications already reflected in earlier
+decisions:
 
 - Filesystem is ephemeral across deploys → WhatsApp auth state and any
-  locally cached media cannot rely on local disk in production (ADR-001).
-- The app must start and bind to `PORT` quickly and expose a health check
-  (`GET /health`, implemented in Phase 1) for Render's health checks.
-- Environment variables are configured in Render's dashboard, mirroring
-  `.env.example` — never committed.
+  locally cached media cannot rely on local disk in production (ADR-001,
+  ADR-006). Every account needs re-pairing after a redeploy until Phase 3's
+  Supabase-backed `AuthStateProvider` lands — documented plainly in
+  `docs/DEPLOYMENT.md`, not hidden.
+- The app binds explicitly to `0.0.0.0:$PORT` (`src/index.ts`) and exposes
+  `GET /health` as the Render health check path — both required for Render
+  to consider a deploy healthy.
+- `app.set('trust proxy', 1)` is enabled in production (`src/server.ts`),
+  since Render terminates TLS at a reverse proxy in front of the app;
+  without it, client IP-based login rate limiting and the `Secure` cookie
+  flag would both behave incorrectly.
+- Only one environment variable must be set by hand in Render's dashboard:
+  `DASHBOARD_ADMIN_PASSWORD` (`sync: false` in `render.yaml`, so Render
+  prompts for it rather than it ever living in the repo). Everything else
+  needed for this phase is already filled in by `render.yaml`.
 
 ## GitHub
 

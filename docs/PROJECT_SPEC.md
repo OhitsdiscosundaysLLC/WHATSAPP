@@ -8,7 +8,8 @@ rules to decide whether and how to respond — using an LLM only when a rule
 actually needs one. It also offers deleted-message archiving (within the
 limits WhatsApp's protocol allows), configurable view-once media handling,
 configurable missed-call auto-replies, moderation actions, a WhatsApp-native
-command interface, and — eventually — a web dashboard.
+command interface, and a web dashboard for connecting WhatsApp accounts and
+(eventually) configuring automation.
 
 This document describes this project only. It was not derived from, and does
 not describe, any other WhatsApp bot project.
@@ -43,15 +44,20 @@ not describe, any other WhatsApp bot project.
   account via a web-protocol client library.
 - Multi-tenant hosting (running the bot for WhatsApp accounts other than the
   owner's). The architecture doesn't preclude it later, but it isn't a
-  current requirement.
-- A polished dashboard UI. The dashboard (Phase 12) starts as a REST API;
-  UI work is out of scope until the API exists.
+  current requirement. "Multi-account" (several of the owner's own WhatsApp
+  accounts, connected from the same dashboard — see docs/DECISIONS.md
+  ADR-010) is explicitly in scope and already supported.
+- A full automation-configuration UI. Phase 2B's dashboard covers
+  connecting/managing WhatsApp accounts (pairing, status, disconnect,
+  remove) — not yet group rules, AI settings, or moderation controls, which
+  remain a later dashboard phase once the underlying systems (Phase 4+)
+  exist to configure.
 
 ## Primary user
 
 The project owner, who:
 
-- Connects their own WhatsApp account to the bot.
+- Connects their own WhatsApp account(s) to the bot, from the web dashboard.
 - Enables/configures automation per group from WhatsApp commands and/or
   (eventually) the dashboard.
 - Is the only party who can grant owner/admin-level permissions.

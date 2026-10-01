@@ -1,7 +1,7 @@
 import { config } from './config/config';
 import { logger } from './services/logger';
 import { createServer } from './server';
-import { getWhatsAppStatus, startWhatsApp, stopWhatsApp } from './whatsapp/whatsappService';
+import { accountManager } from './whatsapp/accountManager';
 
 function main() {
   logger.info(
@@ -11,22 +11,34 @@ function main() {
       supabaseConfigured: config.supabase.configured,
       openaiConfigured: config.openai.configured,
       whatsappEnabled: config.whatsapp.enabled,
+      dashboardConfigured: config.dashboard.configured,
       ownerCount: config.authorization.ownerNumbers.length,
       adminCount: config.authorization.adminNumbers.length,
     },
-    'Starting WhatsApp automation bot (Phase 2: connection/session foundation — no automation/AI yet)',
+    'Starting WhatsApp automation bot (Phase 2B: web dashboard + pairing — no automation/AI yet)',
   );
 
-  const app = createServer({ getWhatsAppStatus });
+  if (!config.dashboard.configured) {
+    logger.warn(
+      'DASHBOARD_ADMIN_PASSWORD is not set — the web dashboard will refuse all logins until it is configured.',
+    );
+  }
 
-  // Bind the HTTP server first so health checks are available immediately,
+  const app = createServer({ getWhatsAppStatus: () => accountManager.getAggregateStatus() });
+
+  // Bind the HTTP server first (explicitly on all interfaces, as Render and
+  // most PaaS hosts require) so health checks are available immediately,
   // then connect to WhatsApp in the background — a slow/failed WhatsApp
   // connection must never block or crash the HTTP server.
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, '0.0.0.0', () => {
     logger.info({ port: config.port }, `HTTP server listening on port ${config.port}`);
   });
 
-  void startWhatsApp();
+  if (config.whatsapp.enabled) {
+    void accountManager.startAll();
+  } else {
+    logger.info('WhatsApp integration disabled (WHATSAPP_ENABLED=false); skipping account startup');
+  }
 
   let shuttingDown = false;
 
@@ -36,12 +48,13 @@ function main() {
 
     logger.info({ signal }, 'Shutting down');
 
-    // Stop accepting new WhatsApp connection attempts and close the socket
-    // (without logging out the linked device) before closing the HTTP
-    // server, so an in-flight /health request still gets a response.
-    stopWhatsApp()
+    // Stop accepting new WhatsApp connection attempts and close every
+    // account's socket (without logging any of them out) before closing
+    // the HTTP server, so an in-flight /health request still gets a response.
+    accountManager
+      .shutdownAll()
       .catch((err: unknown) => {
-        logger.error({ err }, 'Error while stopping WhatsApp connection during shutdown');
+        logger.error({ err }, 'Error while stopping WhatsApp accounts during shutdown');
       })
       .finally(() => {
         server.close((err) => {

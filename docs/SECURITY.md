@@ -141,14 +141,81 @@ accordingly:
   (`DisconnectReason.loggedOut`) and an owner-initiated `requestLogout()`
   call from every other disconnect reason (transient network issues,
   version mismatches, replaced sessions). See docs/ARCHITECTURE.md's
-  reconnect-decision table. `requestLogout()` is implemented but not wired
-  to any endpoint or command yet — nothing external can trigger a logout in
-  this phase.
+  reconnect-decision table. `requestLogout()` is reachable only from the
+  authenticated dashboard's "Disconnect"/"Remove" actions
+  (`src/web/accountRoutes.ts`) — see the dashboard security section below.
 - **Production durability and encryption at rest** are explicitly not
   solved by `FileAuthStateProvider` — see docs/DECISIONS.md ADR-006 for
   what the Phase 3 Supabase-backed provider must additionally guarantee.
 
-## What's actually enforced in code today (Phases 1-2)
+## Web dashboard authentication (Phase 2B)
+
+See docs/DECISIONS.md ADR-009 for the full rationale. Summary of what's
+enforced:
+
+- **Single shared owner password** (`DASHBOARD_ADMIN_PASSWORD`), compared
+  with a constant-time, length-normalized check
+  (`sha256` + `crypto.timingSafeEqual` — see `src/web/authRoutes.ts`), so
+  response timing can't be used to guess the password byte-by-byte. If the
+  variable isn't set, the dashboard refuses every login attempt with a
+  clear `503 dashboard_not_configured` rather than falling back to "no
+  password required."
+- **Server-side sessions only.** The cookie (`wa_owner_session`) holds a
+  32-byte random token and nothing else — no user data, no claims, nothing
+  that would reveal anything if decoded. The real session record lives in
+  an in-memory store (`src/web/sessionStore.ts`), so a stolen cookie value
+  is only useful until the process restarts or the session's 24h TTL
+  elapses, whichever comes first; it can also be invalidated immediately
+  by the explicit `/logout` endpoint.
+- **Cookie flags**: `HttpOnly` (unreadable to any page JavaScript, so a
+  successful XSS still couldn't exfiltrate the session value directly),
+  `Secure` in production (`config.isProduction`, never sent over plain
+  HTTP once deployed), `SameSite=Lax`, scoped to `path=/`.
+- **CSRF**: every mutating request (`POST`/`PUT`/`PATCH`/`DELETE`) under
+  `/login` (N/A — no session yet), `/logout`, and `/api/accounts/**` must
+  carry an `X-CSRF-Token` header matching the token minted for that
+  session and embedded server-side into the dashboard HTML
+  (`src/web/authMiddleware.ts`'s `requireCsrf`). `GET`/`HEAD`/`OPTIONS` are
+  exempt by design (they must stay read-only, which the API honors — no
+  route performs a mutation on a safe method).
+- **Login rate limiting**: 5 failed attempts per 15 minutes per client IP
+  (`src/web/loginRateLimiter.ts`), independent of the session store, so a
+  brute-force attempt against the password gets throttled regardless of
+  whether any session exists yet. `app.set('trust proxy', 1)` is enabled in
+  production so this keys on the real client IP behind Render's proxy, not
+  the proxy's own address.
+- **Public vs. private routes**, enforced in `src/server.ts`/`src/web/`:
+  `GET /health`, `GET /ready`, `GET /login`, `POST /login`, and the static
+  dashboard assets (`styles.css`, `login.js`, `dashboard.js` — no secrets
+  in any of them) are reachable without a session. Everything under
+  `/api/accounts/**`, `POST /logout`, and `GET /` (the dashboard page
+  itself, which embeds the CSRF token) require one — an unauthenticated
+  browser request to `GET /` redirects to `/login`; an unauthenticated API
+  request gets a `401` JSON body, never a redirect (it's not a browser
+  navigation, a redirect would be the wrong contract for a fetch caller).
+
+### QR/pairing-code exposure — explicit boundary
+
+- `WhatsAppStatus` (what `getStatus()` returns, what `/health` and
+  `/ready` are built from) **cannot structurally contain** a QR or pairing
+  code — the TypeScript type has no such field. `PairingSnapshot` (what
+  `getPairingSnapshot()` returns) is a **separate, wider type** that adds
+  them; only `src/web/accountRoutes.ts`'s SSE handler ever calls
+  `getPairingSnapshot()`, and only after `attachSession` + `requireAuth`
+  have already run. `src/whatsapp/connectionManager.test.ts` has a test
+  asserting this boundary directly (`getStatus()` has no `qr`/`pairingCode`
+  property even while a QR is active).
+- The raw QR string is **never sent to the browser**. `src/web/qrImage.ts`
+  renders it server-side into a PNG data URL (via the `qrcode` package)
+  before it goes out over SSE; the client never receives or handles the
+  raw value. It's also never logged (see the Baileys auth-material
+  redaction paths above) and never persisted (no table, no file — it only
+  ever lives in `WhatsAppConnectionManager`'s in-memory field, cleared on
+  connect/replace/close/logout).
+- A pairing code is likewise scoped to `PairingSnapshot` only, cleared on
+  the same lifecycle events as the QR.
+
+## What's actually enforced in code today (Phases 1-2B)
 
 - Config loading never logs secret values (`src/config/config.ts`,
   `src/services/logger.ts`).
@@ -158,7 +225,11 @@ accordingly:
 - The health endpoint reports real component status (including the actual
   WhatsApp connection state) rather than claiming integrations work before
   they're implemented, and never leaks WhatsApp authentication material
-  (see above).
-- No message content is read, stored, or acted upon yet — Phase 2 only
-  establishes the connection; `handlers/`, `rules/`, `commands/`, and
-  `moderation/` still don't exist.
+  (see above) — verified by an automated test (`src/server.test.ts`).
+- The dashboard and its account-management API are unreachable without a
+  valid owner session; every mutating endpoint additionally requires a
+  matching CSRF token — both enforced by middleware, not left to each
+  route handler to remember, and both covered by automated tests.
+- No message content is read, stored, or acted upon yet — Phase 2B only
+  adds connection/account management; `handlers/`, `rules/`, `commands/`,
+  and `moderation/` still don't exist.

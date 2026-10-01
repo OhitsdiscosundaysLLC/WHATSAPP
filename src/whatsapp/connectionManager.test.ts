@@ -37,6 +37,8 @@ function createFakeSocket() {
       });
     }),
     logout: vi.fn(async () => {}),
+    waitForSocketOpen: vi.fn(async () => {}),
+    requestPairingCode: vi.fn(async (_phoneNumber: string) => 'ABCD1234'),
   };
 }
 type FakeSocket = ReturnType<typeof createFakeSocket>;
@@ -254,5 +256,56 @@ describe('WhatsAppConnectionManager', () => {
 
     expect(sockets[0]!.end).not.toHaveBeenCalled();
     expect(watchdogManager.getStatus().state).toBe('awaiting_qr');
+  });
+
+  it('never includes qr/pairingCode in getStatus() (used for /health) even while awaiting_qr', async () => {
+    await manager.start();
+    sockets[0]!.emit('connection.update', { qr: 'super-secret-qr-payload' });
+
+    const status = manager.getStatus() as unknown as Record<string, unknown>;
+    expect(status.state).toBe('awaiting_qr');
+    expect(status).not.toHaveProperty('qr');
+    expect(status).not.toHaveProperty('pairingCode');
+    expect(JSON.stringify(status)).not.toContain('super-secret-qr-payload');
+
+    // getPairingSnapshot() is the one place it's deliberately available.
+    const pairing = manager.getPairingSnapshot();
+    expect(pairing.qr).toBe('super-secret-qr-payload');
+  });
+
+  it('requestPairingCode() returns a code and reflects it only in the pairing snapshot', async () => {
+    await manager.start();
+    sockets[0]!.emit('connection.update', { connection: 'connecting' });
+
+    const code = await manager.requestPairingCode('15551234567');
+
+    expect(code).toBe('ABCD1234');
+    expect(sockets[0]!.waitForSocketOpen).toHaveBeenCalledTimes(1);
+    expect(sockets[0]!.requestPairingCode).toHaveBeenCalledWith('15551234567');
+    expect(manager.getStatus().state).toBe('awaiting_pairing_code');
+    expect(manager.getPairingSnapshot().pairingCode).toBe('ABCD1234');
+    expect(manager.getPairingSnapshot().pairingPhoneNumber).toBe('15551234567');
+    expect(manager.getStatus()).not.toHaveProperty('pairingCode');
+  });
+
+  it('requestPairingCode() throws when there is no active connection attempt', async () => {
+    await expect(manager.requestPairingCode('15551234567')).rejects.toThrow();
+  });
+
+  it('onUpdate() notifies subscribers of every state transition and unsubscribe() stops delivery', async () => {
+    const seen: string[] = [];
+    const unsubscribe = manager.onUpdate((snapshot) => seen.push(snapshot.state));
+
+    await manager.start();
+    sockets[0]!.emit('connection.update', { connection: 'open' });
+    unsubscribe();
+    sockets[0]!.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: boom(428), date: new Date() },
+    });
+
+    expect(seen).toContain('connecting');
+    expect(seen).toContain('connected');
+    expect(seen).not.toContain('reconnecting'); // delivered after unsubscribe
   });
 });

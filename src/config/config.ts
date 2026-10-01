@@ -28,6 +28,11 @@ const envSchema = z.object({
   WHATSAPP_RECONNECT_MAX_MS: z.coerce.number().int().positive().default(60_000),
 
   APP_VERSION: z.string().optional().or(z.literal('')),
+
+  // Interim owner authentication for the web dashboard (Phase 2B). A single
+  // shared password, not a user system — see docs/SECURITY.md for why, and
+  // the explicit plan to replace this with Supabase Auth later.
+  DASHBOARD_ADMIN_PASSWORD: z.string().optional().or(z.literal('')),
 });
 
 function parseNumberList(value: string | undefined): string[] {
@@ -82,6 +87,11 @@ function loadConfig() {
     authorization: {
       ownerNumbers: parseNumberList(env.OWNER_WHATSAPP_NUMBERS),
       adminNumbers: parseNumberList(env.ADMIN_WHATSAPP_NUMBERS),
+    },
+
+    dashboard: {
+      adminPassword: env.DASHBOARD_ADMIN_PASSWORD || undefined,
+      configured: Boolean(env.DASHBOARD_ADMIN_PASSWORD),
     },
   } as const;
 }

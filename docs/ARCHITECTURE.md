@@ -179,6 +179,67 @@ the linked-device session and never requires a new QR scan.
 Neither endpoint ever includes QR contents, credentials, keys, or WhatsApp
 account metadata — see docs/SECURITY.md.
 
+## Multi-account layer (Phase 2B)
+
+`src/whatsapp/accountManager.ts` sits above `connectionManager.ts`: it owns
+a registry of accounts, each with its own `WhatsAppConnectionManager` and
+its own `FileAuthStateProvider` rooted at
+`${WHATSAPP_AUTH_DIR}/<accountId>/`. See docs/DECISIONS.md ADR-010 for why
+this replaced Phase 2's single-account `whatsappService.ts` singleton, and
+what "multi-account-ready" does and doesn't cover yet.
+
+```
+whatsapp/
+  accountManager.ts   registry: Map<accountId, {label, createdAt, manager}>,
+                       JSON manifest persistence, create/reconnect/
+                       disconnect/remove, getAggregateStatus() for /health
+  connectionManager.ts (Phase 2, extended) + onUpdate() subscribers,
+                       getPairingSnapshot(), requestPairingCode()
+```
+
+## Web dashboard layer (Phase 2B)
+
+`src/web/` is the only part of the app allowed to read a `PairingSnapshot`
+(i.e. ever see a QR or pairing code) or mutate account state — see
+docs/SECURITY.md for the full authentication/CSRF model.
+
+```
+web/
+  sessionStore.ts        in-memory owner-session store (id, csrfToken, TTL)
+  loginRateLimiter.ts     in-memory login-attempt limiter (pure, unit-tested)
+  authMiddleware.ts        attachSession / requireAuth / requireCsrf
+  authRoutes.ts             POST /login, POST /logout
+  dashboardRoutes.ts        GET /login, GET / (dashboard HTML + CSRF inject),
+                            static assets (styles.css, login.js, dashboard.js)
+  accountRoutes.ts          /api/accounts/** — list/create/reconnect/
+                            disconnect/remove, pairing-code request, and
+                            the per-account SSE status stream
+  qrImage.ts                 raw QR string -> PNG data URL, server-side,
+                            before anything reaches the browser
+  public/                    static HTML/CSS/JS (no secrets — safe to be
+                            publicly fetchable; the API behind them still
+                            requires auth)
+  views/dashboard.html       template; the one place a CSRF token is
+                            server-injected
+```
+
+`src/server.ts` composes all of this: `createAuthRouter()` and
+`createDashboardRouter()` mount at the root, `createAccountRouter()` mounts
+at `/api/accounts`, `cookie-parser` and `express.json()` are applied
+globally, and `trust proxy` is enabled in production (Render terminates TLS
+at a reverse proxy — without this, `req.ip`/`req.secure` would be wrong,
+breaking rate limiting and the `Secure` cookie flag).
+
+### Real-time updates: SSE, not WebSocket or polling
+
+`GET /api/accounts/:id/events` is a Server-Sent Events stream, chosen over
+WebSocket or short polling — see docs/DECISIONS.md ADR-008 for the full
+reasoning (short version: the data flow is one-directional server→browser,
+SSE reuses the existing cookie session with no separate auth handshake, and
+the browser's native `EventSource` already handles reconnection). The
+dashboard's pairing modal opens one `EventSource` per visible account and
+closes it when the modal closes.
+
 ## Phase scope so far
 
 **Phase 1** — generic application shell: `src/config/config.ts` (typed,
@@ -186,7 +247,14 @@ validated environment configuration), `src/services/logger.ts` (structured
 logging), `src/services/healthService.ts` (composes a `HealthReport` from
 injected component status — see `src/server.ts`), minimal Express app.
 
-**Phase 2** (this phase) — `src/whatsapp/` as described above, wired into
-startup/shutdown and `/health`/`/ready`. No message content is read, stored,
-or acted upon — `handlers/`, `rules/`, `commands/`, and `moderation/` still
-don't exist, per `docs/DEVELOPMENT_PLAN.md`.
+**Phase 2** — `src/whatsapp/` connection lifecycle (client, connection
+manager, reconnect policy, auth-state abstraction, QR terminal display),
+wired into startup/shutdown and `/health`/`/ready`.
+
+**Phase 2B** (this phase) — multi-account registry
+(`src/whatsapp/accountManager.ts`), the authenticated web dashboard
+(`src/web/`), pairing-code support, SSE-based live status, and Render
+deployment configuration (`render.yaml`, `docs/DEPLOYMENT.md`). No message
+content is read, stored, or acted upon — `handlers/`, `rules/`,
+`commands/`, and `moderation/` still don't exist, per
+`docs/DEVELOPMENT_PLAN.md`.

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Dashboard</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>WhatsApp Accounts</h2>
+          <button class="btn btn-primary" id="add-account-btn">+ Add WhatsApp Account</button>
+        </div>
+        <div id="accounts-error" class="error-text"></div>
+        <div id="account-grid" class="account-grid"></div>
+        <div id="empty-state" class="empty-state hidden">
+          <p>No WhatsApp accounts yet.</p>
+          <p class="muted">Click "+ Add WhatsApp Account" to link your first one.</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- Pairing modal -->
+    <div class="modal-backdrop hidden" id="pairing-modal">
+      <div class="card modal">
+        <div class="modal-head">
+          <h3 id="pairing-title">Link WhatsApp</h3>
+          <button class="btn btn-ghost btn-sm" id="pairing-close">✕</button>
+        </div>
+
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="qr" type="button">QR code</button>
+          <button class="tab-btn" data-tab="code" type="button">Phone number</button>
+        </div>
+
+        <div id="pairing-status" class="status-pill status-neutral" style="align-self: flex-start">
+          <span class="status-dot"></span>
+          <span id="pairing-status-text">Waiting…</span>
+        </div>
+
+        <div id="tab-qr">
+          <div class="qr-box" id="qr-box">
+            <span class="muted">Generating QR code…</span>
+          </div>
+          <p class="muted" style="font-size: 13px; margin-top: 10px">
+            Open WhatsApp → Settings → Linked Devices → Link a Device, then scan this code.
+          </p>
+        </div>
+
+        <div id="tab-code" class="hidden">
+          <div class="field">
+            <input
+              type="tel"
+              id="phone-input"
+              placeholder="Phone number, digits only (e.g. 15551234567)"
+            />
+          </div>
+          <button class="btn btn-primary" id="request-code-btn" style="width: 100%">
+            Get pairing code
+          </button>
+          <div id="pairing-code-box" class="pairing-code hidden" style="margin-top: 14px"></div>
+          <p class="muted" style="font-size: 13px; margin-top: 10px">
+            Open WhatsApp → Settings → Linked Devices → Link a Device → "Link with phone number
+            instead", then enter this code.
+          </p>
+        </div>
+
+        <div class="error-text" id="pairing-error"></div>
+      </div>
+    </div>
+
+    <script src="/dashboard.js"></script>
+  </body>
+</html>

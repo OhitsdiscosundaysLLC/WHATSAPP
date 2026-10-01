@@ -12,8 +12,14 @@ const options: LoggerOptions = {
       '*.apiKey',
       '*.serviceRoleKey',
       '*.password',
+      '*.adminPassword',
       '*.token',
+      '*.csrfToken',
+      '*.sessionId',
+      '*.pairingCode',
       'req.headers.authorization',
+      'req.headers.cookie',
+      'req.cookies',
       // WhatsApp (Baileys) auth material — defense in depth. Application
       // code never intentionally logs these objects, but Baileys' own
       // internal logging (it uses the logger we pass it) could include

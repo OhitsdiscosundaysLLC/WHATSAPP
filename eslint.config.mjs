@@ -4,7 +4,10 @@ import eslintConfigPrettier from 'eslint-config-prettier';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**'],
+    // scripts/ is a plain Node CommonJS helper (not part of the TS build);
+    // src/web/public/**/*.js runs in the browser, not Node — neither
+    // belongs under the backend's TypeScript-aware lint rules.
+    ignores: ['dist/**', 'node_modules/**', 'scripts/**', 'src/web/public/**/*.js'],
   },
   ...tseslint.configs.recommended,
   {

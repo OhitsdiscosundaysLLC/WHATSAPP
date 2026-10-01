@@ -1,0 +1,62 @@
+# Render Blueprint for this project. See docs/DEPLOYMENT.md for plain-language,
+# step-by-step deployment instructions aimed at a non-developer.
+#
+# No secrets live in this file (see docs/DECISIONS.md / docs/SECURITY.md).
+# Any env var below with `sync: false` must be set manually in Render's
+# dashboard after the service is created (Render will prompt for it).
+#
+# Runtime choice: plain Node (no Dockerfile). This project has no system-level
+# dependencies beyond what `npm install` already resolves (Baileys and its
+# dependencies are pure JS/WASM), so Render's native Node buildpack is
+# simpler to operate than maintaining a Dockerfile for no real benefit — see
+# docs/DECISIONS.md ADR-007.
+services:
+  - type: web
+    name: whatsapp-automation-bot
+    runtime: node
+    # "starter" (not "free"): Render's free web-service tier spins the
+    # service down after ~15 minutes of no HTTP traffic and back up on the
+    # next request. That's fine for a stateless API, but it would kill the
+    # long-lived WhatsApp WebSocket connection on every spin-down — the one
+    # thing this app exists to keep alive. Downgrade to "free" in Render's
+    # dashboard if you just want to try the dashboard UI without a
+    # persistent WhatsApp connection; see docs/DEPLOYMENT.md.
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+
+      - key: WHATSAPP_ENABLED
+        value: 'true'
+      # NOT durable across redeploys/restarts on Render's ephemeral
+      # filesystem — every WhatsApp account will need re-pairing after a
+      # redeploy until Phase 3 ships a Supabase-backed auth provider.
+      # See docs/DECISIONS.md ADR-006 and docs/DEPLOYMENT.md.
+      - key: WHATSAPP_AUTH_DIR
+        value: ./auth
+      - key: WHATSAPP_RECONNECT_BASE_MS
+        value: '2000'
+      - key: WHATSAPP_RECONNECT_MAX_MS
+        value: '60000'
+
+      # Required for the dashboard to work at all — set this manually in
+      # Render's dashboard (Environment tab) to a password you choose.
+      - key: DASHBOARD_ADMIN_PASSWORD
+        sync: false
+
+      # Not used yet (Phase 3+ / Phase 6+) — left unset is fine for now.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OWNER_WHATSAPP_NUMBERS
+        sync: false
+      - key: ADMIN_WHATSAPP_NUMBERS
+        sync: false

@@ -8,7 +8,12 @@ import type { AuthStateProvider } from './auth/authStateProvider';
 import { createWhatsAppSocket } from './client';
 import { displayQr } from './qrDisplay';
 import { computeBackoffDelayMs, decideOnDisconnect, extractStatusCode } from './reconnectPolicy';
-import type { WhatsAppConnectionState, WhatsAppStatus } from './types';
+import type {
+  PairingListener,
+  PairingSnapshot,
+  WhatsAppConnectionState,
+  WhatsAppStatus,
+} from './types';
 
 export type SocketFactory = (params: {
   authState: AuthenticationState;
@@ -59,10 +64,13 @@ export class WhatsAppConnectionManager {
   private shuttingDown = false;
   private starting = false;
   private lastQr: string | undefined;
+  private lastPairingCode: string | undefined;
+  private lastPairingPhoneNumber: string | undefined;
   private lastConnectedAt: string | undefined;
   private lastDisconnectedAt: string | undefined;
   private updatedAt = new Date().toISOString();
   private saveCreds: (() => Promise<void>) | null = null;
+  private readonly listeners = new Set<PairingListener>();
 
   constructor(options: ConnectionManagerOptions) {
     this.authProvider = options.authProvider;
@@ -81,6 +89,53 @@ export class WhatsAppConnectionManager {
       lastDisconnectedAt: this.lastDisconnectedAt,
       updatedAt: this.updatedAt,
     };
+  }
+
+  /**
+   * `getStatus()` plus short-lived QR/pairing-code material. Callers of
+   * this method are responsible for keeping it off `/health`, logs, and any
+   * public response — see the type's own doc comment and docs/SECURITY.md.
+   * Only `src/web/` (the authenticated dashboard layer) may call this.
+   */
+  getPairingSnapshot(): PairingSnapshot {
+    return {
+      ...this.getStatus(),
+      qr: this.lastQr,
+      pairingCode: this.lastPairingCode,
+      pairingPhoneNumber: this.lastPairingPhoneNumber,
+    };
+  }
+
+  /**
+   * Subscribe to status/pairing updates (used by the dashboard's SSE
+   * stream). Returns an unsubscribe function. The listener fires once
+   * immediately isn't guaranteed — callers that want the current state
+   * right away should call `getPairingSnapshot()` first.
+   */
+  onUpdate(listener: PairingListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emitUpdate(): void {
+    if (this.listeners.size === 0) return;
+    const snapshot = this.getPairingSnapshot();
+    for (const listener of this.listeners) {
+      try {
+        listener(snapshot);
+      } catch (err) {
+        this.logger.warn({ err }, 'WhatsApp status listener threw');
+      }
+    }
+  }
+
+  /** Clears transient QR/pairing-code material — see PairingSnapshot's doc comment. */
+  private clearPairingMaterial(): void {
+    this.lastQr = undefined;
+    this.lastPairingCode = undefined;
+    this.lastPairingPhoneNumber = undefined;
   }
 
   /** Start (or resume) the connection. Safe to call once at boot. */
@@ -124,6 +179,7 @@ export class WhatsAppConnectionManager {
     }
 
     this.clearReconnectTimer();
+    this.clearPairingMaterial(); // a fresh socket means any prior QR/code is stale
     this.setState('connecting');
 
     const { state, saveCreds } = await this.authProvider.load();
@@ -184,7 +240,7 @@ export class WhatsAppConnectionManager {
 
     if (connection === 'open') {
       this.clearInactivityWatchdog(); // connected — no longer waiting on anything
-      this.lastQr = undefined;
+      this.clearPairingMaterial();
       this.reconnectAttempt = 0;
       this.lastConnectedAt = new Date().toISOString();
       this.setState('connected', isNewLogin ? 'Newly linked device' : undefined);
@@ -200,6 +256,7 @@ export class WhatsAppConnectionManager {
     lastDisconnect: BaileysConnectionState['lastDisconnect'],
   ): Promise<void> {
     this.clearInactivityWatchdog();
+    this.clearPairingMaterial();
     this.socket = null;
     this.lastDisconnectedAt = new Date().toISOString();
 
@@ -301,12 +358,42 @@ export class WhatsAppConnectionManager {
     this.state = state;
     this.detail = detail;
     this.updatedAt = new Date().toISOString();
+    this.emitUpdate();
+  }
+
+  /**
+   * Requests a WhatsApp linking code as an alternative to scanning a QR
+   * (verified against @whiskeysockets/baileys 6.7.24's actual
+   * `requestPairingCode` implementation — see docs/DECISIONS.md). Only
+   * valid while a socket exists and hasn't registered yet (i.e. during
+   * `connecting`/`awaiting_qr`); throws otherwise. `phoneNumber` must be
+   * digits only, no leading `+` (E.164 local-part form, matching how
+   * OWNER_WHATSAPP_NUMBERS is already documented in .env.example).
+   */
+  async requestPairingCode(phoneNumber: string): Promise<string> {
+    if (!this.socket) {
+      throw new Error('No active WhatsApp connection attempt to request a pairing code for');
+    }
+    const socket = this.socket;
+    await socket.waitForSocketOpen();
+    if (this.socket !== socket) {
+      throw new Error('WhatsApp connection changed while requesting a pairing code');
+    }
+    const code = await socket.requestPairingCode(phoneNumber);
+    this.lastPairingCode = code;
+    this.lastPairingPhoneNumber = phoneNumber;
+    this.setState(
+      'awaiting_pairing_code',
+      'Enter this code in WhatsApp > Linked Devices > Link with phone number instead',
+    );
+    return code;
   }
 
   /**
    * Explicit, owner-initiated logout: unlinks the device and clears local
-   * credentials. Not reachable from any endpoint yet — reserved for the
-   * Phase 11 command system (`.bot logout` or similar) to call.
+   * credentials. Reachable from the dashboard's "Disconnect" action
+   * (src/web/accountRoutes.ts) and reserved for the future Phase 11
+   * WhatsApp-native command system (`.bot logout` or similar) too.
    *
    * Deterministic by design: it performs the state transition and
    * credential clear itself rather than waiting on the `connection.update`

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in — WhatsApp Bot</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="login-wrap">
+      <form class="card login-card" id="login-form" autocomplete="off">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span class="brand-name">WhatsApp Automation Bot</span>
+        </div>
+        <h1>Owner sign-in</h1>
+        <p class="muted">Enter the dashboard password to manage connected WhatsApp accounts.</p>
+        <div class="field">
+          <input
+            type="password"
+            id="password"
+            name="password"
+            placeholder="Password"
+            autocomplete="current-password"
+            required
+          />
+        </div>
+        <div class="error-text" id="error"></div>
+        <button class="btn btn-primary" type="submit" id="submit-btn" style="width: 100%">
+          Sign in
+        </button>
+      </form>
+    </div>
+    <script src="/login.js"></script>
+  </body>
+</html>

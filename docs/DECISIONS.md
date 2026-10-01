@@ -275,3 +275,222 @@ after every restart/redeploy — a known, documented limitation, not a bug.
   storage, but credential material changes during normal operation
   (`creds.update` fires repeatedly), and env vars aren't writable at
   runtime — a non-starter.
+
+---
+
+## ADR-007: Deployment target — Render Web Service, Node runtime (no Dockerfile)
+
+**Status:** Accepted (Phase 2B)
+
+### Context
+
+The project needs a public URL and a continuously-running process (not a
+static site, not a serverless function — Baileys holds a long-lived
+WebSocket open). The brief explicitly asked whether Node's native runtime
+or Docker was the better fit, and to prefer the simpler option absent a
+concrete reason otherwise.
+
+### Decision
+
+Render's native **Node runtime**, no Dockerfile. `render.yaml` (a Render
+Blueprint) defines the service: `npm install && npm run build` to build,
+`npm start` to run, `/health` as the health check path.
+
+### Rationale
+
+This project has no system-level dependency that would need a custom
+container image — Baileys and every other dependency are pure JS (no
+native compilation step, no system libraries, no non-Node runtime). A
+Dockerfile would add a layer of build/maintenance surface (base image
+choice, security patching, multi-stage build tuning) for zero functional
+benefit here. If a future phase adds a dependency that genuinely needs
+Docker (e.g. a native image-processing library for Phase 8's media
+handling that isn't available as a prebuilt binary), this decision should
+be revisited then, not preemptively.
+
+### Why not Vercel
+
+Vercel's primary model is serverless functions and static/edge hosting;
+neither fits a process that must keep a persistent WebSocket connection to
+WhatsApp open across requests. Render's "Web Service" (and Railway,
+Fly.io, a plain VM, etc.) target exactly this always-on-process model, so
+no redesign around Vercel was pursued. This was also an explicit
+instruction in the brief, but it also happens to be the technically correct
+call given the architecture.
+
+### Plan tier
+
+`render.yaml` specifies the **Starter** (paid) plan, not **Free**. Render's
+free web-service tier spins down after ~15 minutes of no inbound HTTP
+traffic and spins back up on the next request — which would silently kill
+the long-lived WhatsApp socket on every spin-down. That defeats the
+purpose of this phase. Documented plainly (not silently chosen) in
+`docs/DEPLOYMENT.md`, with the free tier offered as an explicit, informed
+downgrade for owners who just want to try the dashboard UI.
+
+---
+
+## ADR-008: Real-time dashboard updates — Server-Sent Events (SSE)
+
+**Status:** Accepted (Phase 2B)
+
+### Context
+
+The pairing modal needs to show QR/status updates as they happen (QR
+appears → scanned → connected) without the owner refreshing the page. Three
+standard options: WebSocket, Server-Sent Events, or short polling.
+
+### Decision
+
+**Server-Sent Events**, one stream per account
+(`GET /api/accounts/:id/events`), built on the connection manager's
+existing `onUpdate()` subscriber list (added in this phase specifically to
+support this).
+
+### Rationale
+
+- The data flow is **one-directional** (server → browser only); the
+  browser never needs to push anything over this channel (pairing-code
+  requests, account actions, etc. are ordinary authenticated POST/DELETE
+  requests). WebSocket's bidirectionality would be unused complexity.
+- SSE rides on a plain HTTP response (`Content-Type: text/event-stream`),
+  so it inherits the existing cookie-based session auth for free — no
+  separate handshake/auth scheme to design, unlike a WebSocket upgrade
+  (which doesn't carry the same CSRF/origin protections and would need its
+  own auth story).
+- The browser's native `EventSource` handles reconnection automatically,
+  which short polling would have to reimplement, and which a raw WebSocket
+  client would also have to reimplement.
+- Short polling was rejected as strictly worse here: either it polls
+  aggressively (wasted requests, slower perceived updates) or infrequently
+  (sluggish QR-scanned-to-connected feedback) — SSE gets push-like latency
+  for free.
+
+### Consequences
+
+- A 20-second heartbeat comment (`: heartbeat\n\n`) is sent on each stream
+  to keep intermediate proxies/load balancers from timing out an
+  apparently-idle connection.
+- Each open dashboard tab holds one HTTP connection per visible pairing
+  modal for as long as it's open; this is negligible at the single-owner,
+  few-accounts scale this phase targets, but would need revisiting if this
+  became a multi-tenant product.
+- The raw QR string is never sent over this channel — see ADR-009 and
+  docs/SECURITY.md; it's rendered server-side into a PNG data URL first.
+
+---
+
+## ADR-009: Interim owner authentication — single shared password, server-side sessions
+
+**Status:** Accepted (Phase 2B) — explicitly interim
+
+### Context
+
+The reference site (functional inspiration only, not copied — see the top
+of this document) reportedly makes its pairing flow publicly reachable by
+any visitor, which this project must not reproduce. Phase 2B needs _some_
+barrier before the dashboard, but building a full multi-user auth system
+(e.g. wiring up Supabase Auth) is Phase 3+ scope, not this phase's.
+
+### Decision
+
+A single environment variable, `DASHBOARD_ADMIN_PASSWORD`, checked against
+the submitted login password with a constant-time, length-normalized
+comparison (`sha256` both sides, then `crypto.timingSafeEqual`). On
+success, an opaque random session token (32 bytes, `crypto.randomBytes`) is
+stored **server-side only**, in an in-memory `Map` (`src/web/sessionStore.ts`),
+and handed to the browser as an `HttpOnly`, `SameSite=Lax` cookie —
+`Secure` additionally in production. A matching per-session CSRF token is
+minted at the same time and embedded into the dashboard's HTML (`<meta
+name="csrf-token">`) for the frontend to echo back on every mutating
+request.
+
+### Why these specific choices
+
+- **No JWT / no signed cookie.** The cookie holds nothing but an
+  unguessable random token; the server looks up the real session
+  server-side. This avoids the entire class of JWT-specific pitfalls (alg
+  confusion, exp handling, revocation difficulty) for a problem that
+  doesn't need them — there's exactly one password, one role (owner), and
+  revocation just means deleting a Map entry.
+- **In-memory session store, not a database.** Consistent with this
+  phase's "don't add persistence before it's needed" stance — and a
+  genuine trade-off, not a shortcut: a process restart signs everyone out.
+  Acceptable for a single-owner dashboard; documented, not hidden.
+- **SameSite=Lax as the first CSRF line of defense**, a synchronizer CSRF
+  token as the second. `Lax` alone already blocks cross-site POST/DELETE
+  (cookies aren't attached to those regardless of origin); the token is
+  defense in depth per the brief's explicit request, and makes the
+  protection explicit/testable rather than relying solely on browser
+  cookie-policy behavior.
+- **Login rate limiting** (`src/web/loginRateLimiter.ts`): 5 failed
+  attempts per 15-minute window per client IP, in-memory, same trade-off
+  rationale as the session store.
+
+### Explicitly interim
+
+This is a placeholder appropriate for "one owner, early private
+deployment" — not a multi-user auth system, not suitable if this product
+ever has more than one admin. The documented upgrade path is **Supabase
+Auth**, once Phase 3 brings Supabase into the project anyway; at that
+point `DASHBOARD_ADMIN_PASSWORD` and the in-memory session store should be
+retired in favor of real user accounts, hashed/salted credentials (or
+OAuth), and database-backed sessions.
+
+---
+
+## ADR-010: Multi-account architecture — `AccountManager` registry
+
+**Status:** Accepted (Phase 2B)
+
+### Context
+
+Phase 2 built `WhatsAppConnectionManager` around a single implicit
+connection (`whatsappService.ts`, a singleton wrapping one manager). The
+product goal is multiple WhatsApp accounts, each independently paired,
+connected, and (eventually) configured. Retrofitting multi-account support
+onto a hard-coded singleton later would mean rewriting the connection
+layer's call sites throughout the app; the brief explicitly asked to avoid
+that trap now.
+
+### Decision
+
+Replaced `whatsappService.ts` with `src/whatsapp/accountManager.ts`: a
+registry (`Map<accountId, { label, createdAt, manager }>`) where each
+account gets its own `WhatsAppConnectionManager` instance and its own
+`FileAuthStateProvider` rooted at `${WHATSAPP_AUTH_DIR}/<accountId>/` (previously
+just `WHATSAPP_AUTH_DIR` directly, for the one implicit account). The
+account list itself (id/label/createdAt — never credentials) is persisted
+as a small JSON manifest (`${WHATSAPP_AUTH_DIR}/accounts.json`) so the
+dashboard's account cards survive a process restart, loaded back into
+manager instances (which then attempt their own reconnect per Phase 2's
+existing logic).
+
+`connectionManager.ts` itself also gained, in this phase: `onUpdate()`
+(subscriber list for SSE), `getPairingSnapshot()` (status + QR/pairing
+code, strictly separate from `getStatus()` — see docs/SECURITY.md), and
+`requestPairingCode()` (verified against Baileys 6.7.24's actual
+implementation — see the ADR-001 update above).
+
+### What's genuinely multi-account-ready vs. not yet
+
+Ready now: any number of accounts can be created, paired, connected, and
+removed independently through the registry and the dashboard; each has
+fully independent connection state, auth storage, and reconnect behavior.
+
+Not yet (explicitly deferred, not silently skipped):
+
+- **Per-account bot configuration** (group rules, AI settings, etc.) —
+  that's Phase 4+'s `group_settings` model, which will key off
+  `account.id` once it exists, but doesn't exist yet in this phase.
+- **`/health`'s single `whatsapp` field** still represents one aggregate
+  status (prefers a connected account, else the first known account, else
+  `disabled` — see `AccountManager.getAggregateStatus()`), not a per-account
+  breakdown. `/health` was designed in Phase 2 around one connection and
+  deliberately wasn't redesigned into a list in this phase — the
+  dashboard's `/api/accounts` is the real per-account status source;
+  `/health` stays a simple liveness/aggregate signal. Revisit if a future
+  phase needs per-account health in automated monitoring.
+- **The manifest is a flat file, not Supabase** — fine at today's scale
+  (one owner, a handful of accounts), and explicitly not the Phase 3
+  database work pulled forward.
