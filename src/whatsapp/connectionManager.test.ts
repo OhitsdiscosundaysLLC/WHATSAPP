@@ -1,5 +1,6 @@
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DecryptionError } from '../db/encryption';
 import type { AuthStateProvider } from './auth/authStateProvider';
 import { WhatsAppConnectionManager, type SocketFactory } from './connectionManager';
 
@@ -171,6 +172,20 @@ describe('WhatsAppConnectionManager', () => {
 
     await vi.runAllTimersAsync();
     expect(createSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a clear, actionable status (not a generic error) when stored credentials are undecryptable, and never retries', async () => {
+    authProvider.load.mockRejectedValueOnce(new DecryptionError(new Error('bad auth tag')));
+
+    await manager.start();
+
+    expect(manager.getStatus().state).toBe('error');
+    expect(manager.getStatus().detail).toMatch(/corrupted or undecryptable/);
+    expect(createSocket).not.toHaveBeenCalled();
+
+    // Never auto-retries a permanently-broken (not transient) failure.
+    await vi.runAllTimersAsync();
+    expect(createSocket).not.toHaveBeenCalled();
   });
 
   it('requestLogout performs an explicit logout, clears credentials, and does not reconnect', async () => {

@@ -8,6 +8,7 @@ import type {
   WASocket,
 } from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
+import { DecryptionError } from '../db/encryption';
 import type { AuthStateProvider } from './auth/authStateProvider';
 import { createWhatsAppSocket } from './client';
 import { displayQr } from './qrDisplay';
@@ -217,8 +218,23 @@ export class WhatsAppConnectionManager {
       );
       await this.connect();
     } catch (err) {
-      this.logger.error({ err }, 'Failed to start WhatsApp connection');
-      this.setState('error', 'Failed to start WhatsApp connection');
+      if (err instanceof DecryptionError) {
+        // Never a transient/network failure — retrying won't help, and
+        // owner/admin commands and the rest of the account registry must
+        // keep working regardless (see accountManager.ts's startAll(),
+        // which isolates each account's start() failure independently).
+        this.logger.error(
+          { err },
+          'Stored WhatsApp credentials are corrupted or undecryptable — will not retry automatically',
+        );
+        this.setState(
+          'error',
+          'Stored credentials are corrupted or undecryptable (wrong encryption key, or the data was tampered with/truncated). Disconnect and re-pair this account to fix.',
+        );
+      } else {
+        this.logger.error({ err }, 'Failed to start WhatsApp connection');
+        this.setState('error', 'Failed to start WhatsApp connection');
+      }
     } finally {
       this.starting = false;
     }

@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  DecryptionError,
   decryptBuffer,
   decryptJson,
   encryptBuffer,
@@ -94,6 +95,18 @@ describe('encryptBuffer / decryptBuffer', () => {
     payload.iv = randomBytes(12);
     expect(() => decryptBuffer(payload, key)).toThrow();
   });
+
+  it('wraps every crypto-level failure in DecryptionError (never a raw Node crypto error) — e.g. the wrong key', () => {
+    const payload = encryptBuffer(Buffer.from('secret'), key);
+    expect(() => decryptBuffer(payload, randomBytes(32))).toThrow(DecryptionError);
+    expect(() => decryptBuffer(payload, randomBytes(32))).toThrow(/Failed to decrypt stored data/);
+  });
+
+  it('wraps a tampered ciphertext failure in DecryptionError', () => {
+    const payload = encryptBuffer(Buffer.from('secret'), key);
+    payload.ciphertext[0] = (payload.ciphertext[0]! + 1) % 256;
+    expect(() => decryptBuffer(payload, key)).toThrow(DecryptionError);
+  });
 });
 
 describe('encryptJson / decryptJson', () => {
@@ -129,5 +142,10 @@ describe('encryptJson / decryptJson', () => {
     const payload = encryptJson({ secret }, key);
     expect(payload.ciphertext.toString('utf8')).not.toContain(secret);
     expect(payload.ciphertext.toString('base64')).not.toContain(secret);
+  });
+
+  it('wraps a decryption failure in DecryptionError', () => {
+    const payload = encryptJson({ secret: 'x' }, key);
+    expect(() => decryptJson(payload, randomBytes(32))).toThrow(DecryptionError);
   });
 });

@@ -11,6 +11,26 @@ export interface EncryptedPayload {
 }
 
 /**
+ * Thrown by `decryptBuffer`/`decryptJson` for any crypto-level failure —
+ * wrong key, corrupted/truncated ciphertext, or tampering all surface as
+ * this one type (see decryptBuffer's doc comment on why they're never
+ * distinguished from each other). Callers that need to react specifically
+ * to "this stored record is undecryptable" (e.g.
+ * src/whatsapp/connectionManager.ts, to show the owner an actionable status
+ * instead of a generic connection error) can `instanceof` this rather than
+ * string-matching Node's crypto error messages.
+ */
+export class DecryptionError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Failed to decrypt stored data: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = 'DecryptionError';
+    this.cause = cause;
+  }
+}
+
+/**
  * Parses and validates `WHATSAPP_AUTH_ENCRYPTION_KEY`. Expected format:
  * exactly 64 hex characters (32 bytes / AES-256). Throws a precise,
  * actionable error rather than silently accepting a weak/malformed key —
@@ -60,9 +80,13 @@ export function encryptBuffer(plaintext: Buffer, key: Buffer): EncryptedPayload 
  * never fall back to a blank/default value (see docs/SECURITY.md).
  */
 export function decryptBuffer(payload: EncryptedPayload, key: Buffer): Buffer {
-  const decipher = createDecipheriv(ALGORITHM, key, payload.iv);
-  decipher.setAuthTag(payload.authTag);
-  return Buffer.concat([decipher.update(payload.ciphertext), decipher.final()]);
+  try {
+    const decipher = createDecipheriv(ALGORITHM, key, payload.iv);
+    decipher.setAuthTag(payload.authTag);
+    return Buffer.concat([decipher.update(payload.ciphertext), decipher.final()]);
+  } catch (err) {
+    throw new DecryptionError(err);
+  }
 }
 
 export function encryptJson(
@@ -80,5 +104,9 @@ export function decryptJson<T>(
   reviver?: (key: string, value: unknown) => unknown,
 ): T {
   const json = decryptBuffer(payload, key).toString('utf8');
-  return JSON.parse(json, reviver) as T;
+  try {
+    return JSON.parse(json, reviver) as T;
+  } catch (err) {
+    throw new DecryptionError(err);
+  }
 }
