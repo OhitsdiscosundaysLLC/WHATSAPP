@@ -27,6 +27,19 @@
     }
   }
 
+  // Briefly confirms a Save button's click actually persisted — the only
+  // feedback these buttons gave before was silence on success (errors were
+  // already shown via the section's error-text element).
+  function flashSaved(button) {
+    const original = button.textContent;
+    button.textContent = 'Saved ✓';
+    button.disabled = true;
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1200);
+  }
+
   const loadError = document.getElementById('load-error');
   const content = document.getElementById('group-content');
   const groupSubject = document.getElementById('group-subject');
@@ -114,24 +127,33 @@
   const generalToggles = document.getElementById('general-toggles');
   const settingsError = document.getElementById('settings-error');
 
-  function renderGeneral(settings) {
+  // Toggling a switch only re-renders the toggles themselves — it must never
+  // overwrite text the user is still editing (e.g. Custom Group Instructions)
+  // with the (now-stale) value from before that edit. Field values are only
+  // synced from the server on initial load or right after that field's own
+  // explicit Save, via renderGeneral() below.
+  function renderGeneralToggles(settings) {
     generalToggles.innerHTML = '';
     for (const def of GENERAL_TOGGLES) {
       generalToggles.appendChild(
         renderToggleRow(def, settings, async (key, value) => {
           settingsError.textContent = '';
           try {
-            renderGeneral(await patchSettings({ [key]: value }));
+            renderGeneralToggles(await patchSettings({ [key]: value }));
           } catch (err) {
             if (err.message !== 'unauthenticated') settingsError.textContent = 'Could not save.';
           }
         }),
       );
     }
+  }
+
+  function renderGeneral(settings) {
+    renderGeneralToggles(settings);
     document.getElementById('group-instructions').value = settings.customGroupInstructions || '';
   }
 
-  document.getElementById('save-instructions-btn').addEventListener('click', async () => {
+  document.getElementById('save-instructions-btn').addEventListener('click', async (event) => {
     settingsError.textContent = '';
     try {
       renderGeneral(
@@ -139,6 +161,7 @@
           customGroupInstructions: document.getElementById('group-instructions').value,
         }),
       );
+      flashSaved(event.currentTarget);
     } catch (err) {
       if (err.message !== 'unauthenticated') settingsError.textContent = 'Could not save.';
     }
@@ -167,26 +190,33 @@
   const aiToggles = document.getElementById('ai-toggles');
   const aiError = document.getElementById('ai-error');
 
-  function renderAi(settings) {
+  // See renderGeneralToggles() above — toggling must never clobber an
+  // unsaved edit in this section's text fields (cooldown / max-per-hour /
+  // Custom AI Instructions).
+  function renderAiToggles(settings) {
     aiToggles.innerHTML = '';
     for (const def of AI_TOGGLES) {
       aiToggles.appendChild(
         renderToggleRow(def, settings, async (key, value) => {
           aiError.textContent = '';
           try {
-            renderAi(await patchSettings({ [key]: value }));
+            renderAiToggles(await patchSettings({ [key]: value }));
           } catch (err) {
             if (err.message !== 'unauthenticated') aiError.textContent = 'Could not save.';
           }
         }),
       );
     }
+  }
+
+  function renderAi(settings) {
+    renderAiToggles(settings);
     document.getElementById('ai-cooldown').value = settings.aiCooldownSeconds ?? 0;
     document.getElementById('ai-max-per-hour').value = settings.aiMaxResponsesPerHour ?? '';
     document.getElementById('ai-instructions').value = settings.customAiInstructions || '';
   }
 
-  document.getElementById('save-ai-btn').addEventListener('click', async () => {
+  document.getElementById('save-ai-btn').addEventListener('click', async (event) => {
     aiError.textContent = '';
     const maxPerHourRaw = document.getElementById('ai-max-per-hour').value.trim();
     try {
@@ -197,6 +227,7 @@
           customAiInstructions: document.getElementById('ai-instructions').value,
         }),
       );
+      flashSaved(event.currentTarget);
     } catch (err) {
       if (err.message !== 'unauthenticated') aiError.textContent = 'Could not save.';
     }
@@ -241,14 +272,16 @@
   const viewonceToggles = document.getElementById('viewonce-toggles');
   const archiveError = document.getElementById('archive-error');
 
-  function renderArchive(settings) {
+  // See renderGeneralToggles() above — toggling must never clobber an
+  // unsaved edit to the retention-days field.
+  function renderArchiveToggles(settings) {
     archiveToggles.innerHTML = '';
     for (const def of ARCHIVE_TOGGLES) {
       archiveToggles.appendChild(
         renderToggleRow(def, settings, async (key, value) => {
           archiveError.textContent = '';
           try {
-            renderArchive(await patchSettings({ [key]: value }));
+            renderArchiveToggles(await patchSettings({ [key]: value }));
             renderViewOnce(currentSettings);
           } catch (err) {
             if (err.message !== 'unauthenticated') archiveError.textContent = 'Could not save.';
@@ -256,6 +289,10 @@
         }),
       );
     }
+  }
+
+  function renderArchive(settings) {
+    renderArchiveToggles(settings);
     document.getElementById('retention-days').value = settings.deletedMessageRetentionDays || '';
   }
 
@@ -275,13 +312,14 @@
     }
   }
 
-  document.getElementById('save-archive-btn').addEventListener('click', async () => {
+  document.getElementById('save-archive-btn').addEventListener('click', async (event) => {
     archiveError.textContent = '';
     const raw = document.getElementById('retention-days').value;
     try {
       renderArchive(
         await patchSettings({ deletedMessageRetentionDays: raw === '' ? null : Number(raw) }),
       );
+      flashSaved(event.currentTarget);
     } catch (err) {
       if (err.message !== 'unauthenticated') archiveError.textContent = 'Could not save.';
     }
@@ -403,7 +441,7 @@
     }
   }
 
-  document.getElementById('save-calls-btn').addEventListener('click', async () => {
+  document.getElementById('save-calls-btn').addEventListener('click', async (event) => {
     callsError.textContent = '';
     try {
       const res = await api('/api/accounts/' + accountId + '/call-settings', {
@@ -415,6 +453,7 @@
         }),
       });
       if (!res.ok) throw new Error('failed');
+      flashSaved(event.currentTarget);
     } catch (err) {
       if (err.message !== 'unauthenticated')
         callsError.textContent = 'Could not save call settings.';

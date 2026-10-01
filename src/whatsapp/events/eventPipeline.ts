@@ -2,6 +2,7 @@ import type { MessageUpsertType, WAMessage } from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
 import type { AuditRepository } from '../../db/auditRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
+import type { IdentityMapRepository } from '../../db/identityMapRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
 import type { RuleEngine } from '../../rules/ruleEngine';
 import {
@@ -15,12 +16,14 @@ import {
   type ViewOnceHandlerDeps,
 } from '../archive/viewOnceHandler';
 import { tryHandleCommand, type CommandHandlerDeps } from '../commands/commandHandler';
+import { extractIdentityCandidates, recordIdentityIfKnown } from '../identity/identityResolver';
 import { normalizeMessage } from './messageNormalizer';
 
 export interface EventPipelineDeps {
   accountId: string;
   groupsRepository: GroupsRepository;
   messagesRepository: MessagesRepository;
+  identityMapRepository: IdentityMapRepository;
   ruleEngine: RuleEngine;
   auditRepository: AuditRepository;
   /** `undefined` only in contexts with no Supabase/account wiring at all — never in production (see accountManager.ts). */
@@ -126,6 +129,19 @@ export class EventPipeline {
       );
     }
 
+    // Identity resolution (@lid <-> phone number) — extract whatever forms
+    // Baileys attached to this message's sender and opportunistically
+    // record the pairing for future lookups, independent of whether this
+    // turns out to be a command. See src/whatsapp/identity/identityResolver.ts.
+    const identityCandidates = extractIdentityCandidates(waMessage, true);
+    await recordIdentityIfKnown(
+      identityCandidates,
+      this.deps.accountId,
+      this.deps.identityMapRepository,
+    ).catch((err: unknown) =>
+      this.deps.logger.warn({ err }, 'Failed to record WhatsApp identity mapping'),
+    );
+
     // Owner/admin in-chat commands run independent of bot_enabled — ".bot
     // on" must work even while the bot is off (product spec Part C).
     // Never reachable by a non-owner/admin sender — see
@@ -133,6 +149,7 @@ export class EventPipeline {
     const handledAsCommand = await tryHandleCommand(
       event,
       group,
+      identityCandidates,
       this.deps.commandHandlerDeps,
     ).catch((err: unknown) => {
       this.deps.logger.error({ err }, 'Command handling threw');

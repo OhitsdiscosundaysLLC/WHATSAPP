@@ -57,7 +57,12 @@
           group.monitoringEnabled ? 'status-connected' : 'status-neutral',
         ),
       );
-      pills.appendChild(pill('AI OFF', 'status-neutral'));
+      pills.appendChild(
+        pill(
+          'AI ' + (group.aiEnabled ? 'ON' : 'OFF'),
+          group.aiEnabled ? 'status-connected' : 'status-neutral',
+        ),
+      );
 
       row.appendChild(main);
       row.appendChild(pills);

@@ -4,14 +4,17 @@ import { checkAiUsageAllowed } from '../../ai/aiUsagePolicy';
 import type { AiUsageRepository } from '../../db/aiUsageRepository';
 import type { AuditRepository } from '../../db/auditRepository';
 import type { GroupsRepository, WhatsAppGroup } from '../../db/groupsRepository';
+import type { IdentityMapRepository } from '../../db/identityMapRepository';
 import type { RulesRepository } from '../../db/rulesRepository';
 import type { MessageSender } from '../../rules/actionEngine';
 import type { NormalizedMessageEvent } from '../events/messageNormalizer';
+import { resolveAuthorizedRole, type SenderIdentityCandidates } from '../identity/identityResolver';
 
 export interface CommandHandlerDeps {
   groupsRepository: GroupsRepository;
   rulesRepository: RulesRepository;
   auditRepository: AuditRepository;
+  identityMapRepository: IdentityMapRepository;
   sender: MessageSender;
   ai: { service: AIService; usageRepository: AiUsageRepository } | undefined;
   /** Digits-only numbers, as configured in OWNER_WHATSAPP_NUMBERS. */
@@ -39,17 +42,17 @@ const KNOWN_COMMANDS = new Set(['bot', 'ai', 'rules', 'settings', 'status', 'hel
  * inside Group A must enable Group A only") — this function is only ever
  * called for a `context === 'group'` event with a resolved `group`.
  *
- * Known limitation (documented, not silently ignored): WhatsApp can
- * present a sender as an `@lid` (linked-id) JID instead of
- * `<number>@s.whatsapp.net` for some accounts/devices. Authorization here
- * compares against the `@s.whatsapp.net` form derived from
- * OWNER_WHATSAPP_NUMBERS/ADMIN_WHATSAPP_NUMBERS; a sender WhatsApp
- * presents only as `@lid` will not match even if it's genuinely the
- * configured owner/admin number. See docs/DECISIONS.md.
+ * `@lid` identity support: WhatsApp can present a sender as an `@lid`
+ * (linked-id) JID instead of `<number>@s.whatsapp.net`. Authorization
+ * tries every identity form Baileys attached to this specific message
+ * (`identityCandidates` — see src/whatsapp/identity/identityResolver.ts),
+ * then falls back to the durable `whatsapp_identity_map` built from past
+ * messages/group-discovery. Never authorizes by display name.
  */
 export async function tryHandleCommand(
   event: NormalizedMessageEvent,
   group: WhatsAppGroup,
+  identityCandidates: SenderIdentityCandidates,
   deps: CommandHandlerDeps,
 ): Promise<boolean> {
   const text = event.text?.trim();
@@ -59,7 +62,13 @@ export async function tryHandleCommand(
   const command = (rawCommand ?? '').toLowerCase();
   if (!KNOWN_COMMANDS.has(command)) return false;
 
-  const role = authorizedRole(event.senderJid, deps.ownerNumbers, deps.adminNumbers);
+  const role = await resolveAuthorizedRole(
+    identityCandidates,
+    event.accountId,
+    deps.identityMapRepository,
+    deps.ownerNumbers,
+    deps.adminNumbers,
+  );
   if (!role) return false; // Not from an authorized owner/admin — don't treat as a command at all.
 
   const argsText = argWords.join(' ').trim();
@@ -105,16 +114,6 @@ const HELP_TEXT = [
   '.status — quick status summary',
   '.help — this message',
 ].join('\n');
-
-function authorizedRole(
-  senderJid: string,
-  ownerNumbers: string[],
-  adminNumbers: string[],
-): 'owner' | 'admin' | undefined {
-  if (ownerNumbers.some((n) => `${n}@s.whatsapp.net` === senderJid)) return 'owner';
-  if (adminNumbers.some((n) => `${n}@s.whatsapp.net` === senderJid)) return 'admin';
-  return undefined;
-}
 
 async function handleToggle(
   deps: CommandHandlerDeps,

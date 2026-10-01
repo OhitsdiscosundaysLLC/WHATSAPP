@@ -28,6 +28,16 @@ export type SocketFactory = (params: {
 export interface DiscoveredGroup {
   jid: string;
   subject: string;
+  /**
+   * Each participant's `@lid`/`@s.whatsapp.net` identity pair, when
+   * Baileys' `Contact` type carries both (verified against the installed
+   * @whiskeysockets/baileys 6.7.24 types — `GroupParticipant` extends
+   * `Contact`, which has optional `.lid`/`.jid` fields). Only populated
+   * from a full `groupFetchAllParticipating()` fetch, never from a
+   * `groups.update` metadata delta (which doesn't carry the participant
+   * list). See src/whatsapp/identity/identityResolver.ts.
+   */
+  participants?: Array<{ lid: string | undefined; jid: string | undefined }>;
 }
 
 export interface ConnectionManagerOptions {
@@ -308,7 +318,11 @@ export class WhatsAppConnectionManager {
     socket
       .groupFetchAllParticipating()
       .then((groups) => {
-        const discovered = Object.values(groups).map((g) => ({ jid: g.id, subject: g.subject }));
+        const discovered = Object.values(groups).map((g) => ({
+          jid: g.id,
+          subject: g.subject,
+          participants: g.participants?.map((p) => ({ lid: p.lid, jid: p.jid })),
+        }));
         this.onGroupsDiscovered?.(discovered);
       })
       .catch((err: unknown) => {

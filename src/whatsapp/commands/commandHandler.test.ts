@@ -4,11 +4,36 @@ import { describe, expect, it, vi } from 'vitest';
 import { AuditRepository } from '../../db/auditRepository';
 import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
 import { GroupsRepository } from '../../db/groupsRepository';
+import { IdentityMapRepository } from '../../db/identityMapRepository';
 import { RulesRepository } from '../../db/rulesRepository';
+import type { WhatsAppGroup } from '../../db/groupsRepository';
 import type { NormalizedMessageEvent } from '../events/messageNormalizer';
-import { tryHandleCommand, type CommandHandlerDeps } from './commandHandler';
+import {
+  tryHandleCommand as tryHandleCommandReal,
+  type CommandHandlerDeps,
+} from './commandHandler';
 
 const testLogger = pino({ level: 'silent' });
+
+/**
+ * Every test in this file authorizes purely via the sender's primary JID
+ * (an @s.whatsapp.net form), which is exactly what identityCandidates.primary
+ * carries when a message has no @lid forms attached — so inferring it from
+ * event.senderJid here keeps every existing call site unchanged.
+ * identityResolver.ts's own tests cover the @lid-specific resolution paths.
+ */
+function tryHandleCommand(
+  event: NormalizedMessageEvent,
+  group: WhatsAppGroup,
+  deps: CommandHandlerDeps,
+): Promise<boolean> {
+  return tryHandleCommandReal(
+    event,
+    group,
+    { primary: event.senderJid, phoneJid: undefined, lidJid: undefined },
+    deps,
+  );
+}
 
 function baseEvent(overrides: Partial<NormalizedMessageEvent> = {}): NormalizedMessageEvent {
   return {
@@ -39,6 +64,7 @@ async function setup(ownerNumbers: string[] = ['15550001111'], adminNumbers: str
     groupsRepository,
     rulesRepository,
     auditRepository,
+    identityMapRepository: new IdentityMapRepository(fake as unknown as SupabaseClient),
     sender,
     ai: undefined,
     ownerNumbers,

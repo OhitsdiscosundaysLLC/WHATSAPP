@@ -387,10 +387,11 @@
 .status           Quick status summary
 .help             This list</pre>
             <p class="muted" style="font-size: 12px">
-              Known limitation: WhatsApp sometimes presents a sender as an <code>@lid</code>
-              (linked-id) JID instead of a phone-number JID. A configured owner/admin number only
-              matches when WhatsApp presents it in the standard
-              <code>&lt;number&gt;@s.whatsapp.net</code> form.
+              WhatsApp sometimes presents a sender as an <code>@lid</code> (linked-id) JID instead
+              of a phone-number JID. The bot resolves this automatically — a configured owner/admin
+              number is recognized either way, as soon as WhatsApp has associated that person's
+              <code>@lid</code> with their phone number (this happens automatically during group
+              discovery, or the first time that person sends a message carrying both forms).
             </p>
           </section>
         </section>

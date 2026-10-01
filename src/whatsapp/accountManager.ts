@@ -8,6 +8,7 @@ import { AiUsageRepository } from '../db/aiUsageRepository';
 import { AuditRepository } from '../db/auditRepository';
 import { CallEventsRepository } from '../db/callEventsRepository';
 import { GroupsRepository } from '../db/groupsRepository';
+import { IdentityMapRepository } from '../db/identityMapRepository';
 import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
 import { MessagesRepository } from '../db/messagesRepository';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
@@ -315,6 +316,7 @@ export class AccountManager {
       const callEventsRepository = new CallEventsRepository(supabase);
       const accountSettingsRepository = new AccountSettingsRepository(supabase);
       const notificationCooldowns = new NotificationCooldownRepository(supabase);
+      const identityMapRepository = new IdentityMapRepository(supabase);
 
       const sender = {
         sendTextMessage: (jid: string, text: string) => manager.sendTextMessage(jid, text),
@@ -361,6 +363,7 @@ export class AccountManager {
         accountId,
         groupsRepository,
         messagesRepository,
+        identityMapRepository,
         ruleEngine,
         auditRepository,
         deletedMessageHandlerDeps: {
@@ -382,6 +385,7 @@ export class AccountManager {
           groupsRepository,
           rulesRepository,
           auditRepository,
+          identityMapRepository,
           sender,
           ai,
           ownerNumbers: config.authorization.ownerNumbers,
@@ -400,8 +404,9 @@ export class AccountManager {
       };
 
       onGroupsDiscovered = (groups) => {
-        handleDiscoveredGroups(accountId, groups, groupsRepository).catch((err: unknown) =>
-          log.error({ err, accountId }, 'Failed to record discovered WhatsApp groups'),
+        handleDiscoveredGroups(accountId, groups, groupsRepository, identityMapRepository).catch(
+          (err: unknown) =>
+            log.error({ err, accountId }, 'Failed to record discovered WhatsApp groups'),
         );
       };
 

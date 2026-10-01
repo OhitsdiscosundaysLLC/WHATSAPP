@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AuditRepository } from '../../db/auditRepository';
 import { FakeSupabaseClient } from '../../db/fakeSupabaseClient';
 import { GroupsRepository } from '../../db/groupsRepository';
+import { IdentityMapRepository } from '../../db/identityMapRepository';
 import { MediaArchiveRepository } from '../../db/mediaArchiveRepository';
 import { MessagesRepository } from '../../db/messagesRepository';
 import { ModerationStateRepository } from '../../db/moderationStateRepository';
@@ -63,10 +64,12 @@ function setup() {
     ownerJids: [],
     logger: testLogger,
   });
+  const identityMapRepository = new IdentityMapRepository(fake as unknown as SupabaseClient);
   const pipeline = new EventPipeline({
     accountId: ACCOUNT_ID,
     groupsRepository,
     messagesRepository,
+    identityMapRepository,
     ruleEngine,
     auditRepository,
     deletedMessageHandlerDeps: {
@@ -88,6 +91,7 @@ function setup() {
       groupsRepository,
       rulesRepository,
       auditRepository,
+      identityMapRepository,
       sender,
       ai: undefined,
       ownerNumbers: [],
