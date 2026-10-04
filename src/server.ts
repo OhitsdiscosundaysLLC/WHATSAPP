@@ -11,6 +11,7 @@ import { createChildLogger } from './services/logger';
 import { createAccountRouter } from './web/accountRoutes';
 import { createActivityRouter } from './web/activityRoutes';
 import { createAdminRouter } from './web/adminRoutes';
+import { createApprovalRouter } from './web/approvalRoutes';
 import { createAuthRouter } from './web/authRoutes';
 import { createContactRouter } from './web/contactRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
@@ -92,6 +93,9 @@ export function createServer({
 
   // Authenticated Owner Inbox — the human-readable "look at this" feed.
   app.use('/api/inbox', createInboxRouter());
+
+  // Authenticated "Approval Before Send" queue — approve/edit/reject proposed replies.
+  app.use('/api/approvals', createApprovalRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });

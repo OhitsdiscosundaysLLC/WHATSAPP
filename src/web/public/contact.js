@@ -162,6 +162,11 @@
       label: 'Never Auto Reply',
       help: 'Overrides every auto-reply rule for this contact, even if one would otherwise match.',
     },
+    {
+      key: 'approvalRequired',
+      label: 'Require owner approval before sending',
+      help: 'Auto-reply rules propose their message instead of sending it — see the Approvals page.',
+    },
   ];
   const generalToggles = document.getElementById('general-toggles');
   const settingsError = document.getElementById('settings-error');

@@ -16,6 +16,7 @@ import { MessagesRepository } from '../db/messagesRepository';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
 import { NotificationCooldownRepository } from '../db/notificationCooldownRepository';
 import { OwnerInboxRepository } from '../db/ownerInboxRepository';
+import { PendingApprovalsRepository } from '../db/pendingApprovalsRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import { getSupabaseClient } from '../db/supabaseClient';
@@ -234,6 +235,15 @@ export class AccountManager {
     return this.accounts.has(id);
   }
 
+  /** Sends a text message from the given account — used by owner-initiated dispatch (e.g. an approved pending reply). Throws if the account doesn't exist or isn't connected. */
+  async sendTextMessage(accountId: string, jid: string, text: string): Promise<void> {
+    const account = this.accounts.get(accountId);
+    if (!account) {
+      throw new Error(`Unknown WhatsApp account: ${accountId}`);
+    }
+    await account.manager.sendTextMessage(jid, text);
+  }
+
   /**
    * Which storage backend is actually in effect, and whether it's
    * misconfigured — surfaced via `/health` (`authPersistence`). Call
@@ -323,6 +333,7 @@ export class AccountManager {
       const identityMapRepository = new IdentityMapRepository(supabase);
       const adminsRepository = new AdminsRepository(supabase);
       const ownerInbox = new OwnerInboxRepository(supabase);
+      const pendingApprovals = new PendingApprovalsRepository(supabase);
 
       const sender = {
         sendTextMessage: (jid: string, text: string) => manager.sendTextMessage(jid, text),
@@ -358,6 +369,7 @@ export class AccountManager {
         moderationStateRepository,
         auditRepository,
         ownerInbox,
+        pendingApprovals,
         classifier: new DeterministicResponseClassifier(),
         sender,
         moderationCapabilities,

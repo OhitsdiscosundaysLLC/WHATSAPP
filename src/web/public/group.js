@@ -139,6 +139,11 @@
       label: 'Never Moderate',
       help: 'Overrides every moderation rule for this group, even if one would otherwise match.',
     },
+    {
+      key: 'approvalRequired',
+      label: 'Require owner approval before sending',
+      help: 'Auto-reply rules propose their message instead of sending it — see the Approvals page.',
+    },
   ];
   const generalToggles = document.getElementById('general-toggles');
   const settingsError = document.getElementById('settings-error');

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WhatsApp Bot — Private Contacts</title>
+    <title>WhatsApp Bot — Approvals</title>
     <meta name="csrf-token" content="__CSRF_TOKEN__" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -16,9 +16,9 @@
       <nav class="nav-links">
         <a class="nav-link" href="/">Accounts</a>
         <a class="nav-link" href="/groups">Groups</a>
-        <a class="nav-link active" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/contacts">Contacts</a>
         <a class="nav-link" href="/inbox">Inbox</a>
-        <a class="nav-link" href="/approvals">Approvals</a>
+        <a class="nav-link active" href="/approvals">Approvals</a>
         <a class="nav-link" href="/activity">Activity</a>
         <a class="nav-link" href="/admins">Admins</a>
         <a class="nav-link" href="/health">Health</a>
@@ -29,29 +29,34 @@
     <main class="app-main">
       <section>
         <div class="section-head">
-          <h2>Private Contacts</h2>
+          <h2>Approval Before Send</h2>
+          <div>
+            <label class="muted" style="font-size: 13px; margin-right: 12px">
+              <input type="checkbox" id="show-decided-filter" /> Show decided items
+            </label>
+          </div>
         </div>
         <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
-          Individual people who have DMed a connected WhatsApp account. Every contact starts with
-          monitoring, AI, and auto-reply all OFF — click a contact to configure it. Blocking a
-          contact stops all automation for them immediately, regardless of any other setting.
+          Replies proposed by auto-reply rules in a group or contact with "Require owner approval
+          before sending" turned on. Nothing here was ever sent to WhatsApp — only Approve actually
+          dispatches it.
         </p>
-        <div id="contacts-error" class="error-text"></div>
-        <div id="contact-list" class="group-list"></div>
-        <div id="empty-state" class="empty-state hidden">
-          <p>No private messages received yet.</p>
+        <div id="approvals-error" class="error-text"></div>
+        <div id="approvals-list"></div>
+        <div id="approvals-empty" class="empty-state hidden">
+          <p>Nothing waiting on approval.</p>
           <p class="muted">
-            A contact appears here automatically the first time someone DMs a connected WhatsApp
-            account.
+            Turn on "Require owner approval before sending" in a group or contact's General settings
+            to hold auto-replies here instead of sending them immediately.
           </p>
         </div>
         <div id="unconfigured-state" class="empty-state hidden">
-          <p>Private contacts require Supabase to be configured.</p>
+          <p>Approval Before Send requires Supabase to be configured.</p>
           <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
         </div>
       </section>
     </main>
 
-    <script src="/contacts.js"></script>
+    <script src="/approvals.js"></script>
   </body>
 </html>

@@ -5,6 +5,7 @@ import type { ContactSettings } from '../db/contactsRepository';
 import type { GroupSettings } from '../db/groupsRepository';
 import type { ModerationStateRepository } from '../db/moderationStateRepository';
 import type { OwnerInboxRepository } from '../db/ownerInboxRepository';
+import type { PendingApprovalsRepository } from '../db/pendingApprovalsRepository';
 import type { GroupRule, RulesRepository } from '../db/rulesRepository';
 import type { RuleStateRepository } from '../db/ruleStateRepository';
 import type { AiCallContext, AIService } from '../ai/aiService';
@@ -35,6 +36,8 @@ export interface RuleEngineDeps {
   auditRepository: AuditRepository;
   /** The human-readable "look at this" feed — see src/db/ownerInboxRepository.ts. Populated only from structured data already known at each call site, never AI-generated guessing. */
   ownerInbox: OwnerInboxRepository;
+  /** "Approval Before Send" (Phase 8) — see src/db/pendingApprovalsRepository.ts. */
+  pendingApprovals: PendingApprovalsRepository;
   classifier: ResponseClassifier;
   sender: MessageSender;
   moderationCapabilities: ModerationCapabilities;
@@ -633,6 +636,53 @@ export class RuleEngine {
       return;
     }
 
+    // "Approval Before Send" (Phase 8): never dispatch directly — propose
+    // the message instead, surfaced in the Owner Inbox. Only an explicit
+    // owner APPROVE (optionally edited) actually sends it — see
+    // src/db/pendingApprovalsRepository.ts and the approve/reject routes.
+    if (settings.approvalRequired) {
+      const approval = await this.deps.pendingApprovals.create({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        targetChatJid: groupJid,
+        proposedMessage: (resolvedAction as { message: string }).message,
+      });
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'pending_approval', approvalId: approval.id },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId,
+        eventType: 'approval.pending',
+        detail: { ruleId: rule.id, ruleName: rule.name, approvalId: approval.id },
+      });
+      await this.deps.ownerInbox.record({
+        accountId,
+        groupId,
+        category: 'pending_approval',
+        title: `Reply awaiting approval: "${rule.name}"`,
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          approvalId: approval.id,
+          proposedMessage: approval.proposedMessage,
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, groupId, approvalId: approval.id },
+        'Auto-reply held for owner approval',
+      );
+      return;
+    }
+
     const result = await executeAction(resolvedAction, {
       groupJid,
       sender: this.deps.sender,
@@ -855,6 +905,51 @@ export class RuleEngine {
       this.deps.logger.info(
         { ruleId: rule.id, contactId },
         'Private auto-reply rule would have fired (dry run)',
+      );
+      return;
+    }
+
+    if (settings.approvalRequired) {
+      const approval = await this.deps.pendingApprovals.create({
+        accountId,
+        contactId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        targetChatJid: contactJid,
+        proposedMessage: (resolvedAction as { message: string }).message,
+      });
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId: undefined,
+        contactId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'pending_approval', approvalId: approval.id },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId: undefined,
+        contactId,
+        eventType: 'approval.pending',
+        detail: { ruleId: rule.id, ruleName: rule.name, approvalId: approval.id },
+      });
+      await this.deps.ownerInbox.record({
+        accountId,
+        contactId,
+        category: 'pending_approval',
+        title: `Reply awaiting approval: "${rule.name}"`,
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          approvalId: approval.id,
+          proposedMessage: approval.proposedMessage,
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, contactId, approvalId: approval.id },
+        'Private auto-reply held for owner approval',
       );
       return;
     }

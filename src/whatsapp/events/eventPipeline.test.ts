@@ -13,6 +13,7 @@ import { MessagesRepository } from '../../db/messagesRepository';
 import { ModerationStateRepository } from '../../db/moderationStateRepository';
 import { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
 import { OwnerInboxRepository } from '../../db/ownerInboxRepository';
+import { PendingApprovalsRepository } from '../../db/pendingApprovalsRepository';
 import { RulesRepository } from '../../db/rulesRepository';
 import { RuleStateRepository } from '../../db/ruleStateRepository';
 import { DeterministicResponseClassifier } from '../../rules/classifiers/responseClassifier';
@@ -54,12 +55,14 @@ function setup() {
   );
   const mediaArchiveRepository = new MediaArchiveRepository(fake as unknown as SupabaseClient);
   const ownerInbox = new OwnerInboxRepository(fake as unknown as SupabaseClient);
+  const pendingApprovals = new PendingApprovalsRepository(fake as unknown as SupabaseClient);
   const ruleEngine = new RuleEngine({
     rulesRepository,
     ruleStateRepository: new RuleStateRepository(fake as unknown as SupabaseClient),
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository,
     ownerInbox,
+    pendingApprovals,
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {

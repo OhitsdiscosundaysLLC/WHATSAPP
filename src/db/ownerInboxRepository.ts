@@ -8,7 +8,8 @@ export type InboxCategory =
   | 'ai_failure'
   | 'disconnected'
   | 'automation_failure'
-  | 'rule_fired';
+  | 'rule_fired'
+  | 'pending_approval';
 
 export interface RecordInboxItemInput {
   accountId: string;

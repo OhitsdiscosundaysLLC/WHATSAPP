@@ -7,6 +7,7 @@ import { FakeSupabaseClient } from '../db/fakeSupabaseClient';
 import { DEFAULT_GROUP_SETTINGS, type GroupSettings } from '../db/groupsRepository';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
 import { OwnerInboxRepository } from '../db/ownerInboxRepository';
+import { PendingApprovalsRepository } from '../db/pendingApprovalsRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { RuleStateRepository } from '../db/ruleStateRepository';
 import type { NormalizedMessageEvent } from '../whatsapp/events/messageNormalizer';
@@ -80,6 +81,7 @@ function buildEngine(
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
     ownerInbox: new OwnerInboxRepository(fake as unknown as SupabaseClient),
+    pendingApprovals: new PendingApprovalsRepository(fake as unknown as SupabaseClient),
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {
@@ -579,6 +581,7 @@ function buildFullEngine(
     moderationStateRepository: new ModerationStateRepository(fake as unknown as SupabaseClient),
     auditRepository: new AuditRepository(fake as unknown as SupabaseClient),
     ownerInbox: new OwnerInboxRepository(fake as unknown as SupabaseClient),
+    pendingApprovals: new PendingApprovalsRepository(fake as unknown as SupabaseClient),
     classifier: new DeterministicResponseClassifier(),
     sender,
     moderationCapabilities: {
@@ -1056,6 +1059,69 @@ describe('RuleEngine — auto_reply', () => {
     const events = await deps.auditRepository.listRecent();
     expect(events.find((e) => e.eventType === 'rule.dry_run')).toBeTruthy();
     expect(events.find((e) => e.eventType === 'rule.fired')).toBeFalsy();
+  });
+
+  it('Approval Before Send: a qualifying message is held as a pending approval, never sent directly', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, approvalRequired: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const approvals = await deps.pendingApprovals.list('acct-1');
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      status: 'pending',
+      groupId: 'group-1',
+      targetChatJid: 'group@g.us',
+      proposedMessage: 'We are open 9-5.',
+    });
+
+    const inboxItems = await deps.ownerInbox.list('acct-1');
+    expect(inboxItems.find((i) => i.category === 'pending_approval')).toBeTruthy();
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'approval.pending')).toBeTruthy();
+    expect(events.find((e) => e.eventType === 'rule.fired')).toBeFalsy();
+  });
+
+  it('Dry Run takes precedence over Approval Before Send: neither a send nor a pending approval is created', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent(),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true, approvalRequired: true, dryRunEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    expect(await deps.pendingApprovals.list('acct-1')).toHaveLength(0);
   });
 });
 
