@@ -6,6 +6,7 @@ import {
   type DailySummaryDelivery,
 } from '../db/accountSettingsRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
+import { computeAnalytics } from '../services/analytics';
 import { computeDailySummary, DAILY_SUMMARY_METRIC_IDS } from '../services/dailySummary';
 import { accountManager } from '../whatsapp/accountManager';
 import type { PairingSnapshot } from '../whatsapp/types';
@@ -307,6 +308,34 @@ export function createAccountRouter(): Router {
       settings.dailySummaryMetrics,
       settings.dailySummaryTimezone,
     );
+    res.status(200).json(result);
+  });
+
+  // Analytics — real aggregated data only, over a selectable range. See
+  // src/services/analytics.ts.
+  router.get('/:id/analytics', async (req: Request, res: Response) => {
+    if (!isSupabaseConfigured()) {
+      res.status(503).json({
+        error: 'supabase_not_configured',
+        message: 'Analytics requires Supabase to be configured.',
+      });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    if (!accountManager.hasAccount(id)) {
+      res.status(404).json({ error: 'account_not_found' });
+      return;
+    }
+
+    const query = req.query as { rangeDays?: string };
+    const allowedRangeDays = [7, 30, 90];
+    const rangeDays = allowedRangeDays.includes(Number(query.rangeDays))
+      ? Number(query.rangeDays)
+      : 7;
+
+    const rangeEnd = new Date();
+    const rangeStart = new Date(rangeEnd.getTime() - rangeDays * 24 * 60 * 60 * 1000);
+    const result = await computeAnalytics(getSupabaseClient(), id, rangeStart, rangeEnd);
     res.status(200).json(result);
   });
 

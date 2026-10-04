@@ -2,12 +2,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Logger } from 'pino';
 import { AccountSettingsRepository, type AccountSettings } from '../db/accountSettingsRepository';
 import { OwnerInboxRepository } from '../db/ownerInboxRepository';
+import { computeMetrics, METRIC_IDS, type MetricValue } from './metrics';
 
-export interface SummaryMetricValue {
-  id: string;
-  label: string;
-  value: number;
-}
+export type SummaryMetricValue = MetricValue;
 
 export interface DailySummaryResult {
   accountId: string;
@@ -16,112 +13,8 @@ export interface DailySummaryResult {
   metrics: SummaryMetricValue[];
 }
 
-type CountQuery = {
-  eq: (col: string, val: unknown) => CountQuery;
-  in: (col: string, vals: unknown[]) => CountQuery;
-  gte: (col: string, val: unknown) => CountQuery;
-  lte: (col: string, val: unknown) => CountQuery;
-} & PromiseLike<{ count: number | null; error: { message: string } | null }>;
-
-async function countRows(
-  supabase: SupabaseClient,
-  table: string,
-  accountId: string,
-  dayStartIso: string,
-  dayEndIso: string,
-  extra?: (q: CountQuery) => CountQuery,
-): Promise<number> {
-  let query = supabase
-    .from(table)
-    .select('*', { count: 'exact', head: true })
-    .eq('account_id', accountId)
-    .gte('created_at', dayStartIso)
-    .lte('created_at', dayEndIso) as unknown as CountQuery;
-  if (extra) query = extra(query);
-
-  const { count, error } = await query;
-  if (error) {
-    throw new Error(`Failed to count ${table} for daily summary: ${error.message}`);
-  }
-  return count ?? 0;
-}
-
-/**
- * Every metric is a real, direct count against an existing table — never
- * estimated, derived, or fabricated (same "only real aggregated data"
- * standard as the Analytics dashboard). Keyed by the exact string stored in
- * `whatsapp_account_settings.daily_summary_metrics`.
- */
-const METRIC_DEFINITIONS: Record<
-  string,
-  {
-    label: string;
-    count: (
-      supabase: SupabaseClient,
-      accountId: string,
-      start: string,
-      end: string,
-    ) => Promise<number>;
-  }
-> = {
-  messages_received: {
-    label: 'Messages received',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'whatsapp_messages', accountId, start, end, (q) =>
-        q.eq('from_me', false),
-      ),
-  },
-  messages_sent_by_bot: {
-    label: 'Messages sent by the bot',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'bot_actions', accountId, start, end, (q) =>
-        q.in('action_type', ['SEND_MESSAGE', 'AI_REPLY']).eq('status', 'success'),
-      ),
-  },
-  rules_fired: {
-    label: 'Rules fired',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'whatsapp_audit_logs', accountId, start, end, (q) =>
-        q.in('event_type', ['rule.fired', 'escalation.fired']),
-      ),
-  },
-  moderation_actions_taken: {
-    label: 'Moderation actions taken',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'bot_actions', accountId, start, end, (q) =>
-        q.in('action_type', ['WARN', 'DELETE_MESSAGE', 'REMOVE_USER']).eq('status', 'success'),
-      ),
-  },
-  ai_calls_made: {
-    label: 'AI calls made',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'whatsapp_ai_usage', accountId, start, end),
-  },
-  deleted_messages_detected: {
-    label: 'Deleted messages detected',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'whatsapp_audit_logs', accountId, start, end, (q) =>
-        q.eq('event_type', 'message.deleted'),
-      ),
-  },
-  call_events_recorded: {
-    label: 'Call events recorded',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'whatsapp_call_events', accountId, start, end),
-  },
-  pending_approvals_created: {
-    label: 'Replies held for approval',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'pending_approvals', accountId, start, end),
-  },
-  owner_inbox_items_created: {
-    label: 'Owner Inbox items',
-    count: (supabase, accountId, start, end) =>
-      countRows(supabase, 'owner_inbox_items', accountId, start, end),
-  },
-};
-
-export const DAILY_SUMMARY_METRIC_IDS = Object.keys(METRIC_DEFINITIONS);
+/** Re-exported for existing callers (src/web/accountRoutes.ts) — see src/services/metrics.ts for the shared definitions. */
+export const DAILY_SUMMARY_METRIC_IDS = METRIC_IDS;
 
 function localDateString(date: Date, timezone: string): string {
   // en-CA formats as YYYY-MM-DD, exactly the stored/dedup format.
@@ -171,14 +64,7 @@ export async function computeDailySummary(
 ): Promise<DailySummaryResult> {
   const localDate = localDateString(now, timezone);
   const { start, end } = localDayBounds(localDate, timezone);
-
-  const metrics: SummaryMetricValue[] = [];
-  for (const id of metricIds) {
-    const def = METRIC_DEFINITIONS[id];
-    if (!def) continue; // an unrecognized id is skipped, never guessed at
-    const value = await def.count(supabase, accountId, start, end);
-    metrics.push({ id, label: def.label, value });
-  }
+  const metrics = await computeMetrics(supabase, accountId, metricIds, start, end);
 
   return { accountId, localDate, metrics };
 }

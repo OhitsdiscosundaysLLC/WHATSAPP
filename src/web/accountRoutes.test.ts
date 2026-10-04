@@ -274,3 +274,53 @@ describe('account routes — Daily Owner Summary', () => {
     expect(res.body.error).toBe('supabase_not_configured');
   });
 });
+
+describe('account routes — Analytics', () => {
+  it('rejects unauthenticated access', async () => {
+    await request(app).get(`/api/accounts/${accountId}/analytics`).expect(401);
+  });
+
+  it('404s for an unknown account id', async () => {
+    const { cookie } = await login();
+    await request(app)
+      .get('/api/accounts/does-not-exist/analytics')
+      .set('Cookie', cookie)
+      .expect(404);
+  });
+
+  it('returns real totals, a daily series, top groups, and AI token usage for a valid account', async () => {
+    const { cookie } = await login();
+    const res = await request(app)
+      .get(`/api/accounts/${accountId}/analytics`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(Array.isArray(res.body.totals)).toBe(true);
+    expect(Array.isArray(res.body.messagesReceivedByDay)).toBe(true);
+    expect(Array.isArray(res.body.rulesFiredByDay)).toBe(true);
+    expect(Array.isArray(res.body.topGroups)).toBe(true);
+    expect(res.body.aiTokensUsed).toMatchObject({ promptTokens: 0, completionTokens: 0 });
+    expect(res.body).not.toHaveProperty('estimatedCost');
+  });
+
+  it('defaults to a 7-day range and only accepts 7/30/90', async () => {
+    const { cookie } = await login();
+    const res = await request(app)
+      .get(`/api/accounts/${accountId}/analytics?rangeDays=999`)
+      .set('Cookie', cookie)
+      .expect(200);
+    const start = new Date(res.body.rangeStart).getTime();
+    const end = new Date(res.body.rangeEnd).getTime();
+    const days = (end - start) / (24 * 60 * 60 * 1000);
+    expect(days).toBeCloseTo(7, 0);
+  });
+
+  it('returns 503 when Supabase is not configured', async () => {
+    isSupabaseConfiguredMock.mockReturnValueOnce(false);
+    const { cookie } = await login();
+    const res = await request(app)
+      .get(`/api/accounts/${accountId}/analytics`)
+      .set('Cookie', cookie)
+      .expect(503);
+    expect(res.body.error).toBe('supabase_not_configured');
+  });
+});
