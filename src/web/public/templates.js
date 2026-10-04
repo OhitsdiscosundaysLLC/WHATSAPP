@@ -1,0 +1,140 @@
+// Automation Templates catalog — shared by group.js and contact.js. Picking
+// a template only pre-fills the existing, already-validated rule-builder
+// form (never a parallel creation path); the owner still reviews and clicks
+// "Create Rule" themselves. See docs/DECISIONS.md.
+window.RULE_TEMPLATES = [
+  {
+    id: 'keyword_auto_reply',
+    label: 'Keyword Auto Reply',
+    appliesTo: ['group', 'contact'],
+    fields: {
+      triggerType: 'auto_reply',
+      name: 'Keyword auto-reply',
+      classifier: 'deterministic',
+      matchMode: 'contains',
+      phrases: '',
+      actionType: 'SEND_MESSAGE',
+      message: '',
+    },
+  },
+  {
+    id: 'business_hours',
+    label: 'Business Hours',
+    appliesTo: ['group', 'contact'],
+    fields: {
+      triggerType: 'auto_reply',
+      name: 'Business hours',
+      classifier: 'deterministic',
+      matchMode: 'contains',
+      phrases: 'hours, open, closed, when are you open',
+      actionType: 'SEND_MESSAGE',
+      message: 'We are open Monday-Friday, 9am-5pm.',
+    },
+  },
+  {
+    id: 'faq',
+    label: 'FAQ',
+    appliesTo: ['group', 'contact'],
+    fields: {
+      triggerType: 'auto_reply',
+      name: 'FAQ',
+      classifier: 'deterministic',
+      matchMode: 'contains',
+      phrases: '',
+      actionType: 'SEND_MESSAGE',
+      message: '',
+    },
+  },
+  {
+    id: 'welcome_message',
+    label: 'Welcome Message (new participant)',
+    appliesTo: ['group'],
+    fields: {
+      triggerType: 'participant_joined',
+      name: 'Welcome new members',
+      message:
+        'Welcome to the group, {participant}! Please read the pinned message to get started.',
+    },
+  },
+  {
+    id: 'n_distinct_people_respond',
+    label: 'N Distinct People Respond',
+    appliesTo: ['group'],
+    fields: {
+      triggerType: 'response_threshold',
+      name: 'Five people respond',
+      matchMode: 'contains',
+      phrases: 'congrats, congratulations',
+      threshold: '5',
+      actionType: 'SEND_MESSAGE',
+      message: 'Thanks everyone for the congratulations!',
+    },
+  },
+  {
+    id: 'notify_owner_phrase',
+    label: 'Notify Owner When Phrase Appears',
+    appliesTo: ['group', 'contact'],
+    fields: {
+      triggerType: 'escalation',
+      name: 'Notify owner',
+      matchMode: 'contains',
+      phrases: '',
+      category: 'notification',
+      notifyOwner: true,
+      createInboxItem: true,
+      suppressAutoReply: false,
+    },
+  },
+  {
+    id: 'spam_protection',
+    label: 'Spam Protection',
+    appliesTo: ['group'],
+    fields: {
+      triggerType: 'moderation',
+      name: 'Spam protection',
+      spamRepeatThreshold: '5',
+      spamWindowSeconds: '30',
+      actionType: 'WARN',
+      message: 'Please stop sending repeated messages.',
+    },
+  },
+  {
+    id: 'link_moderation',
+    label: 'Link Moderation',
+    appliesTo: ['group'],
+    fields: {
+      triggerType: 'moderation',
+      name: 'Link moderation',
+      detectLinks: true,
+      actionType: 'WARN',
+      message: 'Links are not allowed in this group.',
+    },
+  },
+  {
+    id: 'ai_qa',
+    label: 'AI Q&A',
+    appliesTo: ['group', 'contact'],
+    fields: {
+      triggerType: 'auto_reply',
+      name: 'AI Q&A',
+      classifier: 'ai',
+      aiInstructions: '',
+      actionType: 'AI_REPLY',
+    },
+    note: 'Requires AI to be enabled and AI Auto-Reply turned on in the AI tab.',
+  },
+  {
+    id: 'ai_semantic_classification',
+    label: 'AI Semantic Classification',
+    appliesTo: ['group', 'contact'],
+    fields: {
+      triggerType: 'auto_reply',
+      name: 'AI semantic classification',
+      classifier: 'ai',
+      aiInstructions: '',
+      actionType: 'SEND_MESSAGE',
+      message: '',
+    },
+    note: 'Requires AI to be enabled and AI Semantic Classification turned on in the AI tab. Unlike AI Q&A, the reply is a fixed message you write below — AI only decides whether it applies.',
+  },
+];

@@ -149,14 +149,38 @@ export const EscalationConfigSchema = z.object({
 });
 export type EscalationConfig = z.infer<typeof EscalationConfigSchema>;
 
+/**
+ * `participant_joined` (Phase 8, "Welcome Message" template): fires once per
+ * new group participant (Baileys `group-participants.update`, action
+ * `'add'`) — no text to qualify against, so there is no `qualify` field.
+ * `{participant}` in the message is substituted with the new participant's
+ * phone number at send time — see src/rules/ruleEngine.ts.
+ */
+export const ParticipantJoinedActionConfigSchema = z.object({
+  type: z.literal('SEND_MESSAGE'),
+  message: z.string().trim().min(1).max(4096),
+});
+export type ParticipantJoinedActionConfig = z.infer<typeof ParticipantJoinedActionConfigSchema>;
+
+export const ParticipantJoinedConfigSchema = z.object({
+  action: ParticipantJoinedActionConfigSchema,
+  cooldownSeconds: z.number().int().min(0).max(86_400).default(0),
+});
+export type ParticipantJoinedConfig = z.infer<typeof ParticipantJoinedConfigSchema>;
+
 export type GroupRuleConfig =
-  ResponseThresholdConfig | AutoReplyConfig | ModerationConfig | EscalationConfig;
+  | ResponseThresholdConfig
+  | AutoReplyConfig
+  | ModerationConfig
+  | EscalationConfig
+  | ParticipantJoinedConfig;
 
 export const TRIGGER_TYPES = [
   'response_threshold',
   'auto_reply',
   'moderation',
   'escalation',
+  'participant_joined',
 ] as const;
 export type TriggerType = (typeof TRIGGER_TYPES)[number];
 
@@ -165,6 +189,7 @@ const SCHEMAS_BY_TRIGGER_TYPE: Record<TriggerType, z.ZodType> = {
   auto_reply: AutoReplyConfigSchema,
   moderation: ModerationConfigSchema,
   escalation: EscalationConfigSchema,
+  participant_joined: ParticipantJoinedConfigSchema,
 };
 
 /**

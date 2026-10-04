@@ -26,6 +26,7 @@ import type {
   EscalationConfig,
   ModerationActionConfig,
   ModerationConfig,
+  ParticipantJoinedConfig,
   ResponseThresholdConfig,
 } from './ruleConfig';
 
@@ -109,6 +110,8 @@ export class RuleEngine {
           break;
         case 'escalation':
           break; // already handled above
+        case 'participant_joined':
+          break; // fires from evaluateParticipantJoined(), not per-message
         default:
           this.deps.logger.warn(
             { ruleId: rule.id, triggerType: rule.triggerType },
@@ -116,6 +119,134 @@ export class RuleEngine {
           );
       }
     }
+  }
+
+  /**
+   * `participant_joined` ("Welcome Message" template, Phase 8): fires once
+   * per new group participant — see src/whatsapp/connectionManager.ts's
+   * `group-participants.update` subscription and
+   * src/whatsapp/events/eventPipeline.ts's `handleParticipantJoined()`.
+   * Group-only (a DM has no "participants" to welcome).
+   */
+  async evaluateParticipantJoined(
+    groupId: string,
+    groupJid: string,
+    accountId: string,
+    participantJid: string,
+    settings: GroupSettings,
+  ): Promise<void> {
+    const rules = await this.deps.rulesRepository.listEnabledByGroup(groupId);
+    for (const rule of rules) {
+      if (rule.triggerType !== 'participant_joined') continue;
+      await this.fireParticipantJoinedRule(
+        rule,
+        groupId,
+        groupJid,
+        accountId,
+        participantJid,
+        settings,
+      );
+    }
+  }
+
+  private async fireParticipantJoinedRule(
+    rule: GroupRule,
+    groupId: string,
+    groupJid: string,
+    accountId: string,
+    participantJid: string,
+    settings: GroupSettings,
+  ): Promise<void> {
+    const config = rule.config as ParticipantJoinedConfig;
+
+    if (config.cooldownSeconds > 0) {
+      const lastFiredAt = await this.deps.ruleStateRepository.getLastFiredAt(rule.id);
+      if (lastFiredAt) {
+        const elapsedSeconds = (Date.now() - lastFiredAt.getTime()) / 1000;
+        if (elapsedSeconds < config.cooldownSeconds) {
+          await this.deps.auditRepository.recordAction({
+            accountId,
+            groupId,
+            ruleId: rule.id,
+            triggerWhatsappMessageId: undefined,
+            actionType: config.action.type,
+            status: 'skipped',
+            detail: { reason: 'cooldown_active' },
+          });
+          return;
+        }
+      }
+    }
+
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    const participantNumber = participantJid.split('@')[0] ?? participantJid;
+    const resolvedAction: ActionConfig = {
+      type: 'SEND_MESSAGE',
+      message: config.action.message.replace(/\{participant\}/g, participantNumber),
+    };
+
+    if (settings.dryRunEnabled) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: undefined,
+        actionType: config.action.type,
+        status: 'skipped',
+        detail: { reason: 'dry_run', wouldHaveActed: describeAction(resolvedAction) },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId,
+        eventType: 'rule.dry_run',
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerType: 'participant_joined',
+          actionType: config.action.type,
+          wouldHaveActed: describeAction(resolvedAction),
+        },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, groupId, participantJid },
+        'Welcome-message rule would have fired (dry run)',
+      );
+      return;
+    }
+
+    const result = await executeAction(resolvedAction, {
+      groupJid,
+      sender: this.deps.sender,
+      ownerJids: this.deps.ownerJids,
+    });
+
+    await this.deps.auditRepository.recordAction({
+      accountId,
+      groupId,
+      ruleId: rule.id,
+      triggerWhatsappMessageId: undefined,
+      actionType: config.action.type,
+      status: result.status,
+      ...(result.detail ? { detail: { message: result.detail } } : {}),
+    });
+    await this.deps.auditRepository.recordEvent({
+      accountId,
+      groupId,
+      eventType: 'rule.fired',
+      detail: {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        triggerType: 'participant_joined',
+        actionType: config.action.type,
+        actionStatus: result.status,
+      },
+    });
+
+    this.deps.logger.info(
+      { ruleId: rule.id, groupId, participantJid, actionStatus: result.status },
+      'Welcome-message rule fired',
+    );
   }
 
   /**

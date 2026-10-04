@@ -561,3 +561,63 @@ describe('EventPipeline — private messages', () => {
     expect(sender.sendTextMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('EventPipeline — handleParticipantJoined ("Welcome Message" template)', () => {
+  it('skips safely for an undiscovered group (no throw)', async () => {
+    const { pipeline, sender } = setup();
+    await pipeline.handleParticipantJoined('unknown@g.us', 'alice@s.whatsapp.net');
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while bot_enabled is off (safe default)', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Welcome',
+      triggerType: 'participant_joined',
+      config: { action: { type: 'SEND_MESSAGE', message: 'Welcome!' }, cooldownSeconds: 0 },
+    });
+
+    await pipeline.handleParticipantJoined('group@g.us', 'alice@s.whatsapp.net');
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('fires the welcome rule when bot_enabled is on', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Welcome',
+      triggerType: 'participant_joined',
+      config: {
+        action: { type: 'SEND_MESSAGE', message: 'Welcome, {participant}!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleParticipantJoined('group@g.us', '15551234567@s.whatsapp.net');
+
+    expect(sender.sendTextMessage).toHaveBeenCalledWith('group@g.us', 'Welcome, 15551234567!');
+  });
+
+  it('respects Emergency Pause — automationPaused blocks the welcome message', async () => {
+    const { pipeline, groupsRepository, rulesRepository, accountSettingsRepository, sender } =
+      setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Welcome',
+      triggerType: 'participant_joined',
+      config: { action: { type: 'SEND_MESSAGE', message: 'Welcome!' }, cooldownSeconds: 0 },
+    });
+    await accountSettingsRepository.update(ACCOUNT_ID, { automationPaused: true });
+
+    await pipeline.handleParticipantJoined('group@g.us', 'alice@s.whatsapp.net');
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+});

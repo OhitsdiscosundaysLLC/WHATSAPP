@@ -17,6 +17,7 @@ import { createContactRouter } from './web/contactRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
 import { createGroupRouter } from './web/groupRoutes';
 import { createInboxRouter } from './web/inboxRoutes';
+import { createPresetRouter } from './web/presetRoutes';
 import type { WhatsAppStatus } from './whatsapp/types';
 
 const log = createChildLogger('http');
@@ -96,6 +97,9 @@ export function createServer({
 
   // Authenticated "Approval Before Send" queue — approve/edit/reject proposed replies.
   app.use('/api/approvals', createApprovalRouter());
+
+  // Authenticated Group Presets — named, reusable settings bundles.
+  app.use('/api/group-presets', createPresetRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });

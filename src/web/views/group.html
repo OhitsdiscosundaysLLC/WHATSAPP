@@ -17,6 +17,7 @@
       <nav class="nav-links">
         <a class="nav-link" href="/">Accounts</a>
         <a class="nav-link active" href="/groups">Groups</a>
+        <a class="nav-link" href="/presets">Presets</a>
         <a class="nav-link" href="/contacts">Contacts</a>
         <a class="nav-link" href="/inbox">Inbox</a>
         <a class="nav-link" href="/approvals">Approvals</a>
@@ -60,6 +61,19 @@
               you turn it on here.
             </p>
             <div id="settings-error" class="error-text"></div>
+
+            <div class="field-row" style="margin-bottom: 14px">
+              <select id="apply-preset-select" style="flex: 1">
+                <option value="">Apply a preset…</option>
+              </select>
+              <button class="btn btn-sm" id="apply-preset-btn">Apply</button>
+            </div>
+            <p class="muted" style="font-size: 12px; margin: -10px 0 14px">
+              Copies the preset's settings onto this group once — editing the preset later never
+              changes this group again. Manage presets on the
+              <a href="/presets">Presets</a> page.
+            </p>
+
             <div id="general-toggles"></div>
 
             <div style="margin-top: 16px">
@@ -190,7 +204,12 @@
           <section style="margin-bottom: 24px">
             <div class="section-head">
               <h2>Rules</h2>
-              <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
+              <div style="display: flex; gap: 8px; align-items: center">
+                <select id="rule-template-picker" style="width: auto">
+                  <option value="">Start from a template…</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
+              </div>
             </div>
             <div id="rules-error" class="error-text"></div>
 
@@ -204,6 +223,7 @@
                   <option value="auto_reply">Auto-reply</option>
                   <option value="moderation">Moderation</option>
                   <option value="escalation">Escalation</option>
+                  <option value="participant_joined">Welcome Message (new participant)</option>
                 </select>
               </div>
               <div class="field">
@@ -334,6 +354,14 @@
                 </div>
               </div>
 
+              <!-- participant_joined only -->
+              <div id="rule-fields-participant-joined" class="hidden">
+                <p class="muted" style="font-size: 12px; margin: 0 0 8px">
+                  Fires once per new group participant. Use <code>{participant}</code> in the
+                  message below to include their phone number.
+                </p>
+              </div>
+
               <div class="field">
                 <label class="field-label" for="rule-cooldown">Cooldown (seconds, 0 = none)</label>
                 <input type="text" inputmode="numeric" id="rule-cooldown" value="0" />
@@ -430,7 +458,8 @@
             <p class="muted" style="font-size: 13px; margin-top: 0">
               Only "delete for everyone" is observable by WhatsApp's protocol —
               <strong>"delete for me" can never be detected or recovered</strong>, by this bot or
-              any other. Requires Monitoring to also be on.
+              any other. Requires Monitoring to also be on. This is the "Deleted Message Alert"
+              template — the toggles and alert mode below are the full configuration for it.
             </p>
             <div id="archive-error" class="error-text"></div>
             <div id="archive-toggles"></div>
@@ -488,7 +517,8 @@
               Call handling applies to the <strong>whole WhatsApp account</strong>, not just this
               group — WhatsApp calls aren't reliably scoped to a monitored group. Baileys exposes
               call signaling only; this bot can never answer, record, or stream audio/video for a
-              call.
+              call. This is the "Missed Call Response" template — the response options below are the
+              full configuration for it.
             </p>
             <div id="calls-error" class="error-text"></div>
             <div class="toggle-row">
@@ -575,6 +605,7 @@
       </div>
     </main>
 
+    <script src="/templates.js"></script>
     <script src="/group.js"></script>
   </body>
 </html>

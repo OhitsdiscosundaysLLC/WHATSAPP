@@ -98,6 +98,14 @@ export function createDashboardRouter(): Router {
     await sendTemplate(res, 'approvals.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
   });
 
+  router.get('/presets', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    await sendTemplate(res, 'presets.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
+  });
+
   router.get('/admins', attachSession, async (req: Request, res: Response) => {
     if (!req.ownerSession) {
       res.redirect(302, '/login');

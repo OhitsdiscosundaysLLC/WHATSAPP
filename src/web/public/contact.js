@@ -756,6 +756,50 @@
     ruleForm.classList.add('hidden');
   });
 
+  // ---------- Automation Templates ----------
+  // Templates only pre-fill this same rule-builder form — the owner still
+  // reviews and clicks "Create Rule" themselves. See /templates.js.
+
+  const templatePicker = document.getElementById('rule-template-picker');
+  const RULE_TEMPLATES = (window.RULE_TEMPLATES || []).filter((t) =>
+    t.appliesTo.includes('contact'),
+  );
+  for (const template of RULE_TEMPLATES) {
+    const opt = document.createElement('option');
+    opt.value = template.id;
+    opt.textContent = template.label;
+    templatePicker.appendChild(opt);
+  }
+
+  function applyTemplate(template) {
+    const f = template.fields;
+    document.getElementById('rule-name').value = f.name || '';
+    document.getElementById('rule-trigger-type').value = f.triggerType;
+    if (f.classifier) document.getElementById('rule-classifier').value = f.classifier;
+    if (f.matchMode) document.getElementById('rule-match-mode').value = f.matchMode;
+    document.getElementById('rule-phrases').value = f.phrases || '';
+    document.getElementById('rule-ai-instructions').value = f.aiInstructions || '';
+    document.getElementById('rule-cooldown').value = '0';
+    document.getElementById('rule-category').value = f.category || '';
+    document.getElementById('rule-notify-owner').checked = f.notifyOwner !== false;
+    document.getElementById('rule-create-inbox-item').checked = f.createInboxItem !== false;
+    document.getElementById('rule-suppress-auto-reply').checked = Boolean(f.suppressAutoReply);
+
+    updateRuleFormFields();
+    if (f.actionType) document.getElementById('rule-action-type').value = f.actionType;
+    document.getElementById('rule-message').value = f.message || '';
+    updateRuleMessageVisibility();
+
+    rulesError.textContent = template.note ? 'Template note: ' + template.note : '';
+    ruleForm.classList.remove('hidden');
+  }
+
+  templatePicker.addEventListener('change', () => {
+    const template = RULE_TEMPLATES.find((t) => t.id === templatePicker.value);
+    templatePicker.value = '';
+    if (template) applyTemplate(template);
+  });
+
   document.getElementById('save-rule-btn').addEventListener('click', async () => {
     rulesError.textContent = '';
     const phrases = document

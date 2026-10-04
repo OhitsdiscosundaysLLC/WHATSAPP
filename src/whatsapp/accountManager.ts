@@ -307,6 +307,7 @@ export class AccountManager {
     let onMessage: ConnectionManagerOptions['onMessage'];
     let onGroupsDiscovered: ConnectionManagerOptions['onGroupsDiscovered'];
     let onCall: ConnectionManagerOptions['onCall'];
+    let onParticipantJoin: ConnectionManagerOptions['onParticipantJoin'];
 
     // The Phase 4+5(+6) event pipeline / group discovery / rule engine /
     // AI / commands / archive / calls / moderation are all Supabase-only
@@ -469,6 +470,14 @@ export class AccountManager {
           logger: createChildLogger(`whatsapp:account:${accountId}:calls`),
         }).catch((err: unknown) => log.error({ err, accountId }, 'Failed to process call event'));
       };
+
+      onParticipantJoin = (groupJid, participantJid) => {
+        eventPipeline
+          .handleParticipantJoined(groupJid, participantJid)
+          .catch((err: unknown) =>
+            log.error({ err, accountId }, 'Failed to process group-participant-joined event'),
+          );
+      };
     }
 
     manager = new WhatsAppConnectionManager({
@@ -481,6 +490,7 @@ export class AccountManager {
       ...(onMessage ? { onMessage } : {}),
       ...(onGroupsDiscovered ? { onGroupsDiscovered } : {}),
       ...(onCall ? { onCall } : {}),
+      ...(onParticipantJoin ? { onParticipantJoin } : {}),
     });
 
     manager.onUpdate((snapshot) => {

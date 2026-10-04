@@ -83,6 +83,14 @@ export interface ConnectionManagerOptions {
    * src/whatsapp/calls/callHandler.ts.
    */
   onCall?: (call: WACallEvent) => void;
+  /**
+   * Fired once per newly-added participant (Baileys
+   * `group-participants.update`, action `'add'`) — the "Welcome Message"
+   * template's trigger. Renames/promotions/demotions/removals are not
+   * surfaced here; this manager only cares about joins. See
+   * src/whatsapp/events/eventPipeline.ts's `handleParticipantJoined()`.
+   */
+  onParticipantJoin?: (groupJid: string, participantJid: string) => void;
 }
 
 /**
@@ -104,6 +112,7 @@ export class WhatsAppConnectionManager {
   private readonly onMessage: ConnectionManagerOptions['onMessage'];
   private readonly onGroupsDiscovered: ConnectionManagerOptions['onGroupsDiscovered'];
   private readonly onCall: ConnectionManagerOptions['onCall'];
+  private readonly onParticipantJoin: ConnectionManagerOptions['onParticipantJoin'];
 
   private socket: WASocket | null = null;
   private state: WhatsAppConnectionState = 'disabled';
@@ -132,6 +141,7 @@ export class WhatsAppConnectionManager {
     this.onMessage = options.onMessage;
     this.onGroupsDiscovered = options.onGroupsDiscovered;
     this.onCall = options.onCall;
+    this.onParticipantJoin = options.onParticipantJoin;
   }
 
   getStatus(): WhatsAppStatus {
@@ -305,6 +315,17 @@ export class WhatsAppConnectionManager {
           this.onCall(call);
         } catch (err) {
           this.logger.error({ err }, 'onCall handler threw');
+        }
+      }
+    });
+
+    socket.ev.on('group-participants.update', (update) => {
+      if (!this.onParticipantJoin || update.action !== 'add') return;
+      for (const participantJid of update.participants) {
+        try {
+          this.onParticipantJoin(update.id, participantJid);
+        } catch (err) {
+          this.logger.error({ err }, 'onParticipantJoin handler threw');
         }
       }
     });

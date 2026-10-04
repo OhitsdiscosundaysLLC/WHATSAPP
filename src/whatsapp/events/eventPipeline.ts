@@ -207,6 +207,40 @@ export class EventPipeline {
   }
 
   /**
+   * "Welcome Message" template's trigger — a new participant was added to a
+   * known group (Baileys `group-participants.update`, action `'add'`; see
+   * src/whatsapp/connectionManager.ts). Same `bot_enabled`/Emergency Pause
+   * gates as `handleMessage()`'s group branch; an unknown group is skipped
+   * the same way (discovery will catch up).
+   */
+  async handleParticipantJoined(groupJid: string, participantJid: string): Promise<void> {
+    const group = await this.deps.groupsRepository.getByJid(this.deps.accountId, groupJid);
+    if (!group) return;
+
+    const settings = await this.deps.groupsRepository.ensureSettings(group.id);
+    if (!settings.botEnabled) return;
+
+    const accountSettings = await this.deps.accountSettingsRepository.ensure(this.deps.accountId);
+    if (accountSettings.automationPaused) {
+      await this.deps.auditRepository.recordEvent({
+        accountId: this.deps.accountId,
+        groupId: group.id,
+        eventType: 'automation.paused_skip',
+        detail: { trigger: 'participant_joined' },
+      });
+      return;
+    }
+
+    await this.deps.ruleEngine.evaluateParticipantJoined(
+      group.id,
+      groupJid,
+      this.deps.accountId,
+      participantJid,
+      settings,
+    );
+  }
+
+  /**
    * DM-side equivalent of the group branch above — private-chat automation
    * is opt-in only (product spec goal 6, docs/SECURITY.md). A contact is
    * discovered lazily on its first message (mirroring group discovery) and

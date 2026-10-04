@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Presets</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link active" href="/presets">Presets</a>
+        <a class="nav-link" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/inbox">Inbox</a>
+        <a class="nav-link" href="/approvals">Approvals</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <a class="nav-link" href="/admins">Admins</a>
+        <a class="nav-link" href="/health">Health</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>Group Presets</h2>
+          <button class="btn btn-primary btn-sm" id="new-preset-btn">+ New Preset</button>
+        </div>
+        <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
+          Named, reusable settings bundles (e.g. Business, Staff, Community, Client, AI Assistant).
+          Applying a preset to a group <strong>copies</strong> its settings once — editing a preset
+          afterward never changes a group that already applied it, and applying it to one group
+          never affects any other group.
+        </p>
+        <div id="presets-error" class="error-text"></div>
+
+        <div id="preset-form" class="card hidden" style="padding: 18px; margin-bottom: 14px">
+          <h3 style="margin: 0 0 12px; font-size: 15px" id="preset-form-title">New preset</h3>
+          <div class="field">
+            <label class="field-label" for="preset-account">Account</label>
+            <select id="preset-account"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="preset-name">Name</label>
+            <input type="text" id="preset-name" placeholder="e.g. Business" />
+          </div>
+          <p class="muted" style="font-size: 12px">Settings included in this preset:</p>
+          <div id="preset-settings-toggles"></div>
+          <div class="rule-actions">
+            <button class="btn btn-primary btn-sm" id="save-preset-btn">Save Preset</button>
+            <button class="btn btn-ghost btn-sm" id="cancel-preset-btn">Cancel</button>
+          </div>
+        </div>
+
+        <div id="preset-list" class="group-list"></div>
+        <div id="presets-empty" class="empty-state hidden">
+          <p>No presets yet.</p>
+          <p class="muted">
+            Create one here, or apply an existing preset from a group's General tab.
+          </p>
+        </div>
+        <div id="unconfigured-state" class="empty-state hidden">
+          <p>Group Presets require Supabase to be configured.</p>
+          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/presets.js"></script>
+  </body>
+</html>

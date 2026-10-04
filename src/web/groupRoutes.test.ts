@@ -369,6 +369,29 @@ describe('group routes — auto_reply and moderation rule creation (Phase 6+)', 
     expect(res.body.rule.config.action).toEqual({ type: 'DELETE_MESSAGE' });
   });
 
+  it('creates a participant_joined ("Welcome Message") rule', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('welcome-create@g.us', 'Welcome Group');
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Welcome new members',
+        triggerType: 'participant_joined',
+        message: 'Welcome, {participant}!',
+        cooldownSeconds: 0,
+      })
+      .expect(201);
+
+    expect(res.body.rule.triggerType).toBe('participant_joined');
+    expect(res.body.rule.config.action).toEqual({
+      type: 'SEND_MESSAGE',
+      message: 'Welcome, {participant}!',
+    });
+  });
+
   it('rejects an unknown trigger_type by falling back to response_threshold validation', async () => {
     const { cookie, csrfToken } = await login();
     const groupId = await seedGroup('bad-trigger@g.us', 'Bad Trigger Group');

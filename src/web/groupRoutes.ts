@@ -9,6 +9,7 @@ import {
 } from '../db/groupsRepository';
 import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
 import { MessagesRepository } from '../db/messagesRepository';
+import { PresetsRepository, presetSettingsToGroupPatch } from '../db/presetsRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
 import { TRIGGER_TYPES } from '../rules/ruleConfig';
@@ -156,6 +157,13 @@ function escalationFormToConfig(body: RuleFormInput): unknown {
   };
 }
 
+function participantJoinedFormToConfig(body: RuleFormInput): unknown {
+  return {
+    action: { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' },
+    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+  };
+}
+
 function formToConfig(triggerType: string, body: RuleFormInput): unknown {
   switch (triggerType) {
     case 'auto_reply':
@@ -164,6 +172,8 @@ function formToConfig(triggerType: string, body: RuleFormInput): unknown {
       return moderationFormToConfig(body);
     case 'escalation':
       return escalationFormToConfig(body);
+    case 'participant_joined':
+      return participantJoinedFormToConfig(body);
     case 'response_threshold':
     default:
       return ruleFormToConfig(body);
@@ -379,6 +389,48 @@ export function createGroupRouter(): Router {
       actor: 'owner',
       eventType: 'human_takeover.changed',
       detail: { humanTakeoverUntil: humanTakeoverUntil ?? null },
+    });
+
+    res.status(200).json({ settings });
+  });
+
+  router.post('/:id/apply-preset', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const groupsRepository = new GroupsRepository(supabase);
+    const group = await groupsRepository.getById(id);
+    if (!group) {
+      res.status(404).json({ error: 'group_not_found' });
+      return;
+    }
+
+    const body = req.body as { presetId?: unknown } | undefined;
+    const presetId = typeof body?.presetId === 'string' ? body.presetId : '';
+    if (!presetId) {
+      res.status(400).json({ error: 'invalid_request', message: 'presetId is required.' });
+      return;
+    }
+
+    const presetsRepository = new PresetsRepository(supabase);
+    const preset = await presetsRepository.getById(presetId);
+    if (!preset) {
+      res.status(404).json({ error: 'preset_not_found' });
+      return;
+    }
+
+    const settings = await groupsRepository.updateSettings(
+      id,
+      presetSettingsToGroupPatch(preset.settings),
+    );
+
+    const auditRepository = new AuditRepository(supabase);
+    await auditRepository.recordEvent({
+      accountId: group.accountId,
+      groupId: id,
+      actor: 'owner',
+      eventType: 'preset.applied',
+      detail: { presetId, presetName: preset.name },
     });
 
     res.status(200).json({ settings });

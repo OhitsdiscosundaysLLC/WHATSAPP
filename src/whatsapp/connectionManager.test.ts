@@ -323,4 +323,34 @@ describe('WhatsAppConnectionManager', () => {
     expect(seen).toContain('connected');
     expect(seen).not.toContain('reconnecting'); // delivered after unsubscribe
   });
+
+  it('onParticipantJoin fires once per newly-added participant, not for other actions', async () => {
+    const joins: Array<[string, string]> = [];
+    const joinManager = new WhatsAppConnectionManager({
+      authProvider,
+      logger: silentLogger,
+      reconnect: { baseMs: 1000, maxMs: 10_000 },
+      createSocket: createSocket as unknown as SocketFactory,
+      onParticipantJoin: (groupJid, participantJid) => joins.push([groupJid, participantJid]),
+    });
+
+    await joinManager.start();
+    sockets[0]!.emit('group-participants.update', {
+      id: 'group@g.us',
+      author: 'owner@s.whatsapp.net',
+      participants: ['alice@s.whatsapp.net', 'bob@s.whatsapp.net'],
+      action: 'add',
+    });
+    sockets[0]!.emit('group-participants.update', {
+      id: 'group@g.us',
+      author: 'owner@s.whatsapp.net',
+      participants: ['alice@s.whatsapp.net'],
+      action: 'remove',
+    });
+
+    expect(joins).toEqual([
+      ['group@g.us', 'alice@s.whatsapp.net'],
+      ['group@g.us', 'bob@s.whatsapp.net'],
+    ]);
+  });
 });

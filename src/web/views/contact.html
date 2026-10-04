@@ -17,6 +17,7 @@
       <nav class="nav-links">
         <a class="nav-link" href="/">Accounts</a>
         <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link" href="/presets">Presets</a>
         <a class="nav-link active" href="/contacts">Contacts</a>
         <a class="nav-link" href="/inbox">Inbox</a>
         <a class="nav-link" href="/approvals">Approvals</a>
@@ -209,7 +210,12 @@
           <section style="margin-bottom: 24px">
             <div class="section-head">
               <h2>Auto-Reply Rules</h2>
-              <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
+              <div style="display: flex; gap: 8px; align-items: center">
+                <select id="rule-template-picker" style="width: auto">
+                  <option value="">Start from a template…</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
+              </div>
             </div>
             <p class="muted" style="font-size: 13px; margin-top: -8px">
               A DM has exactly one other participant, so only auto-reply and escalation rules apply
@@ -419,6 +425,7 @@
       </div>
     </main>
 
+    <script src="/templates.js"></script>
     <script src="/contact.js"></script>
   </body>
 </html>

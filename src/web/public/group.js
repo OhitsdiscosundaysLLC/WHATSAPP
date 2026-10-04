@@ -651,6 +651,7 @@
       ['REMOVE_USER', 'Remove the participant (requires destructive actions enabled)'],
     ],
     escalation: [],
+    participant_joined: [],
   };
 
   function updateRuleFormFields() {
@@ -660,6 +661,7 @@
       .classList.toggle(
         'hidden',
         triggerType === 'moderation' ||
+          triggerType === 'participant_joined' ||
           (triggerType === 'auto_reply' &&
             document.getElementById('rule-classifier').value === 'ai'),
       );
@@ -676,6 +678,9 @@
       .getElementById('rule-fields-escalation')
       .classList.toggle('hidden', triggerType !== 'escalation');
     document
+      .getElementById('rule-fields-participant-joined')
+      .classList.toggle('hidden', triggerType !== 'participant_joined');
+    document
       .getElementById('rule-ai-instructions-field')
       .classList.toggle(
         'hidden',
@@ -687,7 +692,10 @@
     document
       .getElementById('rule-action-type')
       .closest('.field')
-      .classList.toggle('hidden', triggerType === 'escalation');
+      .classList.toggle(
+        'hidden',
+        triggerType === 'escalation' || triggerType === 'participant_joined',
+      );
 
     const actionSelect = document.getElementById('rule-action-type');
     actionSelect.innerHTML = '';
@@ -708,10 +716,11 @@
       .classList.toggle(
         'hidden',
         triggerType === 'escalation' ||
-          action === 'LOG_ONLY' ||
-          action === 'AI_REPLY' ||
-          action === 'DELETE_MESSAGE' ||
-          action === 'REMOVE_USER',
+          (triggerType !== 'participant_joined' &&
+            (action === 'LOG_ONLY' ||
+              action === 'AI_REPLY' ||
+              action === 'DELETE_MESSAGE' ||
+              action === 'REMOVE_USER')),
       );
   }
 
@@ -811,6 +820,9 @@
         '.'
       );
     }
+    if (rule.triggerType === 'participant_joined') {
+      return 'When someone new joins the group, send "' + cfg.action.message + '"' + cooldown + '.';
+    }
     return '(unknown rule type)';
   }
 
@@ -897,6 +909,53 @@
   });
   document.getElementById('cancel-rule-btn').addEventListener('click', () => {
     ruleForm.classList.add('hidden');
+  });
+
+  // ---------- Automation Templates ----------
+  // Templates only pre-fill this same rule-builder form — the owner still
+  // reviews and clicks "Create Rule" themselves. See /templates.js.
+
+  const templatePicker = document.getElementById('rule-template-picker');
+  const RULE_TEMPLATES = (window.RULE_TEMPLATES || []).filter((t) => t.appliesTo.includes('group'));
+  for (const template of RULE_TEMPLATES) {
+    const opt = document.createElement('option');
+    opt.value = template.id;
+    opt.textContent = template.label;
+    templatePicker.appendChild(opt);
+  }
+
+  function applyTemplate(template) {
+    const f = template.fields;
+    document.getElementById('rule-name').value = f.name || '';
+    document.getElementById('rule-trigger-type').value = f.triggerType;
+    if (f.classifier) document.getElementById('rule-classifier').value = f.classifier;
+    if (f.matchMode) document.getElementById('rule-match-mode').value = f.matchMode;
+    document.getElementById('rule-phrases').value = f.phrases || '';
+    document.getElementById('rule-ai-instructions').value = f.aiInstructions || '';
+    document.getElementById('rule-threshold').value = f.threshold || '5';
+    document.getElementById('rule-banned-phrases').value = '';
+    document.getElementById('rule-spam-threshold').value = f.spamRepeatThreshold || '0';
+    document.getElementById('rule-spam-window').value = f.spamWindowSeconds || '30';
+    document.getElementById('rule-detect-links').checked = Boolean(f.detectLinks);
+    document.getElementById('rule-cooldown').value = '0';
+    document.getElementById('rule-category').value = f.category || '';
+    document.getElementById('rule-notify-owner').checked = f.notifyOwner !== false;
+    document.getElementById('rule-create-inbox-item').checked = f.createInboxItem !== false;
+    document.getElementById('rule-suppress-auto-reply').checked = Boolean(f.suppressAutoReply);
+
+    updateRuleFormFields();
+    if (f.actionType) document.getElementById('rule-action-type').value = f.actionType;
+    document.getElementById('rule-message').value = f.message || '';
+    updateRuleMessageVisibility();
+
+    rulesError.textContent = template.note ? 'Template note: ' + template.note : '';
+    ruleForm.classList.remove('hidden');
+  }
+
+  templatePicker.addEventListener('change', () => {
+    const template = RULE_TEMPLATES.find((t) => t.id === templatePicker.value);
+    templatePicker.value = '';
+    if (template) applyTemplate(template);
   });
 
   document.getElementById('save-rule-btn').addEventListener('click', async () => {
@@ -1119,6 +1178,54 @@
     }
   }
 
+  // ---------- Presets ----------
+
+  async function loadPresetPicker() {
+    const select = document.getElementById('apply-preset-select');
+    try {
+      const res = await api('/api/group-presets?accountId=' + encodeURIComponent(accountId));
+      if (!res.ok) return;
+      const data = await res.json();
+      select.innerHTML = '<option value="">Apply a preset…</option>';
+      for (const preset of data.presets || []) {
+        const opt = document.createElement('option');
+        opt.value = preset.id;
+        opt.textContent = preset.name;
+        select.appendChild(opt);
+      }
+    } catch {
+      // non-critical — the picker just stays empty
+    }
+  }
+
+  document.getElementById('apply-preset-btn').addEventListener('click', async (event) => {
+    const select = document.getElementById('apply-preset-select');
+    if (!select.value) return;
+    settingsError.textContent = '';
+    try {
+      const res = await api('/api/groups/' + groupId + '/apply-preset', {
+        method: 'POST',
+        body: JSON.stringify({ presetId: select.value }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        settingsError.textContent = data.message || 'Could not apply the preset.';
+        return;
+      }
+      currentSettings = data.settings;
+      renderGeneral(data.settings);
+      renderAi(data.settings);
+      renderModeration(data.settings);
+      renderArchive(data.settings);
+      renderViewOnce(data.settings);
+      select.value = '';
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated')
+        settingsError.textContent = 'Could not apply the preset.';
+    }
+  });
+
   // ---------- Init ----------
 
   async function init() {
@@ -1150,6 +1257,7 @@
         loadDeletedMessages(),
         loadMediaArchive(),
         loadCallSettings(),
+        loadPresetPicker(),
       ]);
     } catch (err) {
       if (err.message !== 'unauthenticated') {

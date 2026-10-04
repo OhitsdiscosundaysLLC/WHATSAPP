@@ -1669,3 +1669,121 @@ describe('RuleEngine — escalation', () => {
     expect(items[0]).toMatchObject({ category: 'rule_fired', contactId: 'contact-row-1' });
   });
 });
+
+describe('RuleEngine — participant_joined ("Welcome Message" template)', () => {
+  it('sends the welcome message, substituting {participant}', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Welcome new members',
+      triggerType: 'participant_joined',
+      config: {
+        action: { type: 'SEND_MESSAGE', message: 'Welcome to the group, {participant}!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluateParticipantJoined(
+      'group-1',
+      'group@g.us',
+      'acct-1',
+      '15551234567@s.whatsapp.net',
+      settingsWith({}),
+    );
+
+    expect(sender.sentTo).toEqual([
+      { jid: 'group@g.us', text: 'Welcome to the group, 15551234567!' },
+    ]);
+  });
+
+  it('Dry Run: never actually sends, logs "would have" instead', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Welcome new members',
+      triggerType: 'participant_joined',
+      config: {
+        action: { type: 'SEND_MESSAGE', message: 'Welcome, {participant}!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluateParticipantJoined(
+      'group-1',
+      'group@g.us',
+      'acct-1',
+      '15551234567@s.whatsapp.net',
+      settingsWith({ dryRunEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    const actions = await deps.auditRepository.listRecentActions();
+    expect(actions[0]).toMatchObject({ status: 'skipped' });
+    expect(actions[0]?.detail).toMatchObject({
+      reason: 'dry_run',
+      wouldHaveActed: 'send message: "Welcome, 15551234567!"',
+    });
+  });
+
+  it('respects cooldownSeconds between fires', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Welcome new members',
+      triggerType: 'participant_joined',
+      config: {
+        action: { type: 'SEND_MESSAGE', message: 'Welcome!' },
+        cooldownSeconds: 3600,
+      },
+    });
+
+    await engine.evaluateParticipantJoined(
+      'group-1',
+      'group@g.us',
+      'acct-1',
+      'a@s.whatsapp.net',
+      settingsWith({}),
+    );
+    await engine.evaluateParticipantJoined(
+      'group-1',
+      'group@g.us',
+      'acct-1',
+      'b@s.whatsapp.net',
+      settingsWith({}),
+    );
+
+    expect(sender.sentTo).toHaveLength(1);
+  });
+
+  it('ignores rules of other trigger types and only fires participant_joined ones', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Hours auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['hours'] },
+        action: { type: 'SEND_MESSAGE', message: 'We are open 9-5.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluateParticipantJoined(
+      'group-1',
+      'group@g.us',
+      'acct-1',
+      'a@s.whatsapp.net',
+      settingsWith({ autoReplyEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+  });
+});
