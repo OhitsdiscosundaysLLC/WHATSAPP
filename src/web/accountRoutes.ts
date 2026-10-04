@@ -1,9 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import {
   AccountSettingsRepository,
+  DAILY_SUMMARY_DELIVERIES,
   type CallResponseAction,
+  type DailySummaryDelivery,
 } from '../db/accountSettingsRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
+import { computeDailySummary, DAILY_SUMMARY_METRIC_IDS } from '../services/dailySummary';
 import { accountManager } from '../whatsapp/accountManager';
 import type { PairingSnapshot } from '../whatsapp/types';
 import { createChildLogger } from '../services/logger';
@@ -205,6 +208,106 @@ export function createAccountRouter(): Router {
     const repository = new AccountSettingsRepository(getSupabaseClient());
     const settings = await repository.update(id, patch);
     res.status(200).json({ settings });
+  });
+
+  // Daily Owner Summary — see src/services/dailySummary.ts.
+  router.get('/:id/daily-summary-settings', async (req: Request, res: Response) => {
+    if (!isSupabaseConfigured()) {
+      res.status(503).json({
+        error: 'supabase_not_configured',
+        message: 'The Daily Owner Summary requires Supabase to be configured.',
+      });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    if (!accountManager.hasAccount(id)) {
+      res.status(404).json({ error: 'account_not_found' });
+      return;
+    }
+    const repository = new AccountSettingsRepository(getSupabaseClient());
+    const settings = await repository.ensure(id);
+    res.status(200).json({ settings, availableMetrics: DAILY_SUMMARY_METRIC_IDS });
+  });
+
+  router.patch('/:id/daily-summary-settings', requireCsrf, async (req: Request, res: Response) => {
+    if (!isSupabaseConfigured()) {
+      res.status(503).json({
+        error: 'supabase_not_configured',
+        message: 'The Daily Owner Summary requires Supabase to be configured.',
+      });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    if (!accountManager.hasAccount(id)) {
+      res.status(404).json({ error: 'account_not_found' });
+      return;
+    }
+
+    const body = req.body as
+      | {
+          dailySummaryEnabled?: unknown;
+          dailySummaryTimeMinutes?: unknown;
+          dailySummaryTimezone?: unknown;
+          dailySummaryDelivery?: unknown;
+          dailySummaryMetrics?: unknown;
+        }
+      | undefined;
+    const patch: Parameters<AccountSettingsRepository['update']>[1] = {};
+    if (typeof body?.dailySummaryEnabled === 'boolean') {
+      patch.dailySummaryEnabled = body.dailySummaryEnabled;
+    }
+    if (
+      typeof body?.dailySummaryTimeMinutes === 'number' &&
+      Number.isInteger(body.dailySummaryTimeMinutes) &&
+      body.dailySummaryTimeMinutes >= 0 &&
+      body.dailySummaryTimeMinutes < 1440
+    ) {
+      patch.dailySummaryTimeMinutes = body.dailySummaryTimeMinutes;
+    }
+    if (typeof body?.dailySummaryTimezone === 'string' && body.dailySummaryTimezone.trim()) {
+      patch.dailySummaryTimezone = body.dailySummaryTimezone.trim();
+    }
+    if (
+      typeof body?.dailySummaryDelivery === 'string' &&
+      DAILY_SUMMARY_DELIVERIES.includes(body.dailySummaryDelivery as DailySummaryDelivery)
+    ) {
+      patch.dailySummaryDelivery = body.dailySummaryDelivery as DailySummaryDelivery;
+    }
+    if (Array.isArray(body?.dailySummaryMetrics)) {
+      patch.dailySummaryMetrics = body.dailySummaryMetrics.filter(
+        (m): m is string => typeof m === 'string' && DAILY_SUMMARY_METRIC_IDS.includes(m),
+      );
+    }
+
+    const repository = new AccountSettingsRepository(getSupabaseClient());
+    const settings = await repository.update(id, patch);
+    res.status(200).json({ settings });
+  });
+
+  /** A live preview of today-so-far's summary — never marks anything sent, never dispatches via WhatsApp. */
+  router.get('/:id/daily-summary-preview', async (req: Request, res: Response) => {
+    if (!isSupabaseConfigured()) {
+      res.status(503).json({
+        error: 'supabase_not_configured',
+        message: 'The Daily Owner Summary requires Supabase to be configured.',
+      });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    if (!accountManager.hasAccount(id)) {
+      res.status(404).json({ error: 'account_not_found' });
+      return;
+    }
+    const supabase = getSupabaseClient();
+    const repository = new AccountSettingsRepository(supabase);
+    const settings = await repository.ensure(id);
+    const result = await computeDailySummary(
+      supabase,
+      id,
+      settings.dailySummaryMetrics,
+      settings.dailySummaryTimezone,
+    );
+    res.status(200).json(result);
   });
 
   return router;

@@ -42,4 +42,44 @@ describe('AccountSettingsRepository', () => {
     const acct2 = await r.get('acct-2');
     expect(acct2?.callHandlingEnabled).toBe(false);
   });
+
+  it('ensure() creates safe defaults for the Daily Owner Summary (off, 9am UTC, dashboard delivery)', async () => {
+    const r = repo();
+    const settings = await r.ensure('acct-1');
+    expect(settings.dailySummaryEnabled).toBe(false);
+    expect(settings.dailySummaryTimeMinutes).toBe(540);
+    expect(settings.dailySummaryTimezone).toBe('UTC');
+    expect(settings.dailySummaryDelivery).toBe('dashboard');
+    expect(settings.dailySummaryMetrics.length).toBeGreaterThan(0);
+    expect(settings.dailySummaryLastSentDate).toBeUndefined();
+  });
+
+  it('update() persists Daily Owner Summary settings', async () => {
+    const r = repo();
+    await r.ensure('acct-1');
+    const updated = await r.update('acct-1', {
+      dailySummaryEnabled: true,
+      dailySummaryTimeMinutes: 1020,
+      dailySummaryTimezone: 'America/New_York',
+      dailySummaryDelivery: 'both',
+      dailySummaryMetrics: ['messages_received', 'rules_fired'],
+    });
+    expect(updated).toMatchObject({
+      dailySummaryEnabled: true,
+      dailySummaryTimeMinutes: 1020,
+      dailySummaryTimezone: 'America/New_York',
+      dailySummaryDelivery: 'both',
+      dailySummaryMetrics: ['messages_received', 'rules_fired'],
+    });
+  });
+
+  it('can set and later clear dailySummaryLastSentDate (the dedup gate)', async () => {
+    const r = repo();
+    await r.ensure('acct-1');
+    const withDate = await r.update('acct-1', { dailySummaryLastSentDate: '2026-01-01' });
+    expect(withDate.dailySummaryLastSentDate).toBe('2026-01-01');
+
+    const cleared = await r.update('acct-1', { dailySummaryLastSentDate: undefined });
+    expect(cleared.dailySummaryLastSentDate).toBeUndefined();
+  });
 });

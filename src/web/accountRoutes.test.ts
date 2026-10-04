@@ -158,3 +158,119 @@ describe('account routes — call settings', () => {
     expect(res.body.error).toBe('supabase_not_configured');
   });
 });
+
+describe('account routes — Daily Owner Summary', () => {
+  it('rejects unauthenticated access', async () => {
+    await request(app).get(`/api/accounts/${accountId}/daily-summary-settings`).expect(401);
+  });
+
+  it('returns safe defaults for a new account (off, 9am UTC, dashboard delivery)', async () => {
+    const { cookie } = await login();
+    const res = await request(app)
+      .get(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body.settings).toMatchObject({
+      dailySummaryEnabled: false,
+      dailySummaryTimeMinutes: 540,
+      dailySummaryTimezone: 'UTC',
+      dailySummaryDelivery: 'dashboard',
+    });
+    expect(Array.isArray(res.body.availableMetrics)).toBe(true);
+    expect(res.body.availableMetrics.length).toBeGreaterThan(0);
+  });
+
+  it('404s for an unknown account id', async () => {
+    const { cookie } = await login();
+    await request(app)
+      .get('/api/accounts/does-not-exist/daily-summary-settings')
+      .set('Cookie', cookie)
+      .expect(404);
+  });
+
+  it('rejects PATCH without a CSRF token', async () => {
+    const { cookie } = await login();
+    await request(app)
+      .patch(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .send({ dailySummaryEnabled: true })
+      .expect(403);
+  });
+
+  it('updates settings with a valid CSRF token, filtering metrics to known ids only', async () => {
+    const { cookie, csrfToken } = await login();
+    const res = await request(app)
+      .patch(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        dailySummaryEnabled: true,
+        dailySummaryTimeMinutes: 1080,
+        dailySummaryTimezone: 'America/Los_Angeles',
+        dailySummaryDelivery: 'both',
+        dailySummaryMetrics: ['messages_received', 'not_a_real_metric'],
+      })
+      .expect(200);
+    expect(res.body.settings).toMatchObject({
+      dailySummaryEnabled: true,
+      dailySummaryTimeMinutes: 1080,
+      dailySummaryTimezone: 'America/Los_Angeles',
+      dailySummaryDelivery: 'both',
+      dailySummaryMetrics: ['messages_received'],
+    });
+  });
+
+  it('rejects an invalid dailySummaryDelivery value (ignored, not applied)', async () => {
+    const { cookie, csrfToken } = await login();
+    const res = await request(app)
+      .patch(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ dailySummaryDelivery: 'carrier_pigeon' })
+      .expect(200);
+    expect(res.body.settings.dailySummaryDelivery).not.toBe('carrier_pigeon');
+  });
+
+  it('rejects an out-of-range dailySummaryTimeMinutes (ignored, not applied)', async () => {
+    const { cookie, csrfToken } = await login();
+    const before = await request(app)
+      .get(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .expect(200);
+    const res = await request(app)
+      .patch(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ dailySummaryTimeMinutes: 1440 })
+      .expect(200);
+    expect(res.body.settings.dailySummaryTimeMinutes).toBe(
+      before.body.settings.dailySummaryTimeMinutes,
+    );
+  });
+
+  it('the preview endpoint computes real counts and never marks the summary sent', async () => {
+    const { cookie } = await login();
+    const res = await request(app)
+      .get(`/api/accounts/${accountId}/daily-summary-preview`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body.localDate).toBeTruthy();
+    expect(Array.isArray(res.body.metrics)).toBe(true);
+
+    const settingsAfter = await request(app)
+      .get(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(settingsAfter.body.settings.dailySummaryLastSentDate).toBeFalsy();
+  });
+
+  it('returns 503 when Supabase is not configured', async () => {
+    isSupabaseConfiguredMock.mockReturnValueOnce(false);
+    const { cookie } = await login();
+    const res = await request(app)
+      .get(`/api/accounts/${accountId}/daily-summary-settings`)
+      .set('Cookie', cookie)
+      .expect(503);
+    expect(res.body.error).toBe('supabase_not_configured');
+  });
+});

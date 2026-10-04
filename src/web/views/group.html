@@ -46,6 +46,9 @@
           <button class="tab-btn" data-section-tab="moderation" type="button">Moderation</button>
           <button class="tab-btn" data-section-tab="archive" type="button">Archive</button>
           <button class="tab-btn" data-section-tab="calls" type="button">Calls</button>
+          <button class="tab-btn" data-section-tab="daily-summary" type="button">
+            Daily Summary
+          </button>
           <button class="tab-btn" data-section-tab="commands" type="button">Commands</button>
           <button class="tab-btn" data-section-tab="activity" type="button">Activity</button>
         </div>
@@ -548,6 +551,61 @@
               ></textarea>
             </div>
             <button class="btn btn-sm" id="save-calls-btn">Save</button>
+          </section>
+        </section>
+
+        <!-- ---------- DAILY SUMMARY ---------- -->
+        <section class="section-tab hidden" data-section="daily-summary">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Daily Owner Summary</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Configured per <strong>whole WhatsApp account</strong>, not just this group — same
+              reasoning as Calls. One summary per local day; never sent twice.
+            </p>
+            <div id="summary-error" class="error-text"></div>
+            <div class="toggle-row">
+              <div class="toggle-label">
+                <div class="toggle-label-text">Enabled</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="summary-enabled" />
+                <span class="toggle-track"></span>
+                <span class="toggle-thumb"></span>
+              </label>
+            </div>
+            <div class="field-row" style="margin-top: 12px">
+              <div class="field">
+                <label class="field-label" for="summary-time">Send at (local time)</label>
+                <input type="time" id="summary-time" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="summary-timezone">Timezone (IANA)</label>
+                <input type="text" id="summary-timezone" placeholder="e.g. America/New_York" />
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="summary-delivery">Delivery</label>
+              <select id="summary-delivery">
+                <option value="dashboard">Dashboard only (Owner Inbox)</option>
+                <option value="whatsapp">WhatsApp only (message the owner)</option>
+                <option value="both">Both</option>
+              </select>
+            </div>
+            <p class="muted" style="font-size: 12px; margin: 12px 0 4px">Metrics to include</p>
+            <div id="summary-metrics-toggles"></div>
+            <button class="btn btn-sm" id="save-summary-btn" style="margin-top: 12px">Save</button>
+          </section>
+
+          <section>
+            <div class="section-head">
+              <h3 style="margin: 0">Preview (today so far)</h3>
+              <button class="btn btn-sm" id="preview-summary-btn">Refresh Preview</button>
+            </div>
+            <div class="card" style="padding: 16px">
+              <div id="summary-preview"></div>
+            </div>
           </section>
         </section>
 

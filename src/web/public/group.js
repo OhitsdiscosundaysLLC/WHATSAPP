@@ -626,6 +626,142 @@
     }
   });
 
+  // ---------- Daily Owner Summary ----------
+
+  const summaryError = document.getElementById('summary-error');
+
+  function metricLabel(id) {
+    return id
+      .split('_')
+      .map((w) => w[0].toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+
+  function minutesToTime(minutes) {
+    const h = Math.floor(minutes / 60)
+      .toString()
+      .padStart(2, '0');
+    const m = (minutes % 60).toString().padStart(2, '0');
+    return h + ':' + m;
+  }
+
+  function timeToMinutes(value) {
+    const [h, m] = value.split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  async function loadSummarySettings() {
+    if (!accountId) return;
+    try {
+      const res = await api('/api/accounts/' + accountId + '/daily-summary-settings');
+      if (!res.ok) {
+        if (res.status === 503)
+          summaryError.textContent = 'The Daily Owner Summary requires Supabase to be configured.';
+        return;
+      }
+      const data = await res.json();
+      document.getElementById('summary-enabled').checked = Boolean(
+        data.settings.dailySummaryEnabled,
+      );
+      document.getElementById('summary-time').value = minutesToTime(
+        data.settings.dailySummaryTimeMinutes,
+      );
+      document.getElementById('summary-timezone').value = data.settings.dailySummaryTimezone;
+      document.getElementById('summary-delivery').value = data.settings.dailySummaryDelivery;
+
+      const toggles = document.getElementById('summary-metrics-toggles');
+      toggles.innerHTML = '';
+      const selected = new Set(data.settings.dailySummaryMetrics || []);
+      for (const id of data.availableMetrics || []) {
+        const row = document.createElement('div');
+        row.className = 'toggle-row';
+        const label = document.createElement('div');
+        label.className = 'toggle-label';
+        const text = document.createElement('div');
+        text.className = 'toggle-label-text';
+        text.textContent = metricLabel(id);
+        label.appendChild(text);
+        const toggle = document.createElement('label');
+        toggle.className = 'toggle';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.dataset.metricId = id;
+        input.checked = selected.has(id);
+        const track = document.createElement('span');
+        track.className = 'toggle-track';
+        const thumb = document.createElement('span');
+        thumb.className = 'toggle-thumb';
+        toggle.appendChild(input);
+        toggle.appendChild(track);
+        toggle.appendChild(thumb);
+        row.appendChild(label);
+        row.appendChild(toggle);
+        toggles.appendChild(row);
+      }
+    } catch (err) {
+      if (err.message !== 'unauthenticated')
+        summaryError.textContent = 'Could not load the Daily Owner Summary settings.';
+    }
+  }
+
+  document.getElementById('save-summary-btn').addEventListener('click', async (event) => {
+    summaryError.textContent = '';
+    const metrics = Array.from(
+      document.querySelectorAll('#summary-metrics-toggles input[type="checkbox"]:checked'),
+    ).map((el) => el.dataset.metricId);
+    try {
+      const res = await api('/api/accounts/' + accountId + '/daily-summary-settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          dailySummaryEnabled: document.getElementById('summary-enabled').checked,
+          dailySummaryTimeMinutes: timeToMinutes(
+            document.getElementById('summary-time').value || '09:00',
+          ),
+          dailySummaryTimezone: document.getElementById('summary-timezone').value.trim(),
+          dailySummaryDelivery: document.getElementById('summary-delivery').value,
+          dailySummaryMetrics: metrics,
+        }),
+      });
+      if (!res.ok) throw new Error('failed');
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated')
+        summaryError.textContent = 'Could not save the Daily Owner Summary settings.';
+    }
+  });
+
+  async function loadSummaryPreview() {
+    if (!accountId) return;
+    const preview = document.getElementById('summary-preview');
+    try {
+      const res = await api('/api/accounts/' + accountId + '/daily-summary-preview');
+      if (!res.ok) return;
+      const data = await res.json();
+      preview.innerHTML = '';
+      const date = document.createElement('p');
+      date.className = 'muted';
+      date.style.fontSize = '12px';
+      date.textContent = 'As of now, ' + data.localDate + ' (account timezone):';
+      preview.appendChild(date);
+      if (!data.metrics.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'No metrics selected.';
+        preview.appendChild(empty);
+      }
+      for (const metric of data.metrics) {
+        const row = document.createElement('div');
+        row.className = 'rule-summary';
+        row.textContent = metric.label + ': ' + metric.value;
+        preview.appendChild(row);
+      }
+    } catch {
+      // non-critical
+    }
+  }
+
+  document.getElementById('preview-summary-btn').addEventListener('click', loadSummaryPreview);
+
   // ---------- Rules ----------
 
   const ruleForm = document.getElementById('rule-form');
@@ -1258,6 +1394,8 @@
         loadMediaArchive(),
         loadCallSettings(),
         loadPresetPicker(),
+        loadSummarySettings(),
+        loadSummaryPreview(),
       ]);
     } catch (err) {
       if (err.message !== 'unauthenticated') {

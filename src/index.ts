@@ -3,6 +3,7 @@ import { checkDatabaseHealth, getSupabaseClient } from './db/supabaseClient';
 import { ContactsRepository } from './db/contactsRepository';
 import { GroupsRepository } from './db/groupsRepository';
 import { MessagesRepository } from './db/messagesRepository';
+import { startDailySummarySweep } from './services/dailySummary';
 import { logger } from './services/logger';
 import { createServer } from './server';
 import { accountManager } from './whatsapp/accountManager';
@@ -66,6 +67,18 @@ function main() {
       )
     : undefined;
 
+  // Best-effort periodic Daily Owner Summary delivery — see
+  // src/services/dailySummary.ts. Supabase-only, same as retention sweep.
+  const stopDailySummarySweep = config.supabase.configured
+    ? startDailySummarySweep(() => accountManager.listAccounts().map((a) => a.id), {
+        supabase: getSupabaseClient(),
+        sendTextMessage: (accountId, jid, text) =>
+          accountManager.sendTextMessage(accountId, jid, text),
+        ownerJids: config.authorization.ownerNumbers.map((n) => `${n}@s.whatsapp.net`),
+        logger,
+      })
+    : undefined;
+
   let shuttingDown = false;
 
   const shutdown = (signal: string) => {
@@ -74,6 +87,7 @@ function main() {
 
     logger.info({ signal }, 'Shutting down');
     stopRetentionSweep?.();
+    stopDailySummarySweep?.();
 
     // Stop accepting new WhatsApp connection attempts and close every
     // account's socket (without logging any of them out) before closing
