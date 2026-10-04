@@ -124,15 +124,47 @@ export const ModerationConfigSchema = z.object({
 });
 export type ModerationConfig = z.infer<typeof ModerationConfigSchema>;
 
-export type GroupRuleConfig = ResponseThresholdConfig | AutoReplyConfig | ModerationConfig;
+/**
+ * `escalation` (Phase 8): deterministic-only phrase matching (same shape
+ * as `response_threshold`'s qualify) for urgent/sensitive intents (refund,
+ * complaint, legal, emergency, ...) that should reach the owner instead of
+ * being auto-replied to. `category` is a free-text label the owner picks
+ * (e.g. "refund") — it both documents intent and becomes the Owner Inbox
+ * item's tag, so no separate "tag" mechanism is needed. Works for both
+ * groups and private contacts (unlike moderation, which is group-only).
+ */
+export const EscalationActionConfigSchema = z.object({
+  category: z.string().trim().min(1).max(50),
+  notifyOwner: z.boolean().default(true),
+  createInboxItem: z.boolean().default(true),
+  /** Suppresses every auto_reply rule for THIS message only (not a standing override — see neverAutoReply for that). */
+  suppressAutoReply: z.boolean().default(true),
+});
+export type EscalationActionConfig = z.infer<typeof EscalationActionConfigSchema>;
 
-export const TRIGGER_TYPES = ['response_threshold', 'auto_reply', 'moderation'] as const;
+export const EscalationConfigSchema = z.object({
+  qualify: QualifyConfigSchema,
+  action: EscalationActionConfigSchema,
+  cooldownSeconds: z.number().int().min(0).max(86_400).default(0),
+});
+export type EscalationConfig = z.infer<typeof EscalationConfigSchema>;
+
+export type GroupRuleConfig =
+  ResponseThresholdConfig | AutoReplyConfig | ModerationConfig | EscalationConfig;
+
+export const TRIGGER_TYPES = [
+  'response_threshold',
+  'auto_reply',
+  'moderation',
+  'escalation',
+] as const;
 export type TriggerType = (typeof TRIGGER_TYPES)[number];
 
 const SCHEMAS_BY_TRIGGER_TYPE: Record<TriggerType, z.ZodType> = {
   response_threshold: ResponseThresholdConfigSchema,
   auto_reply: AutoReplyConfigSchema,
   moderation: ModerationConfigSchema,
+  escalation: EscalationConfigSchema,
 };
 
 /**

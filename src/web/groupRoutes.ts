@@ -49,6 +49,11 @@ interface RuleFormInput {
   spamRepeatThreshold?: unknown;
   spamWindowSeconds?: unknown;
   detectLinks?: unknown;
+  // escalation
+  category?: unknown;
+  notifyOwner?: unknown;
+  createInboxItem?: unknown;
+  suppressAutoReply?: unknown;
 }
 
 function ruleFormToConfig(body: RuleFormInput): unknown {
@@ -128,12 +133,35 @@ function moderationFormToConfig(body: RuleFormInput): unknown {
   };
 }
 
+function escalationFormToConfig(body: RuleFormInput): unknown {
+  const phrases = Array.isArray(body.phrases)
+    ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  const matchMode = MATCH_MODES.includes(body.matchMode as (typeof MATCH_MODES)[number])
+    ? body.matchMode
+    : 'contains';
+
+  return {
+    qualify: { mode: matchMode, phrases },
+    action: {
+      category: typeof body.category === 'string' && body.category.trim() ? body.category : 'other',
+      notifyOwner: body.notifyOwner === undefined ? true : Boolean(body.notifyOwner),
+      createInboxItem: body.createInboxItem === undefined ? true : Boolean(body.createInboxItem),
+      suppressAutoReply:
+        body.suppressAutoReply === undefined ? true : Boolean(body.suppressAutoReply),
+    },
+    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+  };
+}
+
 function formToConfig(triggerType: string, body: RuleFormInput): unknown {
   switch (triggerType) {
     case 'auto_reply':
       return autoReplyFormToConfig(body);
     case 'moderation':
       return moderationFormToConfig(body);
+    case 'escalation':
+      return escalationFormToConfig(body);
     case 'response_threshold':
     default:
       return ruleFormToConfig(body);

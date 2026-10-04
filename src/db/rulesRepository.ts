@@ -26,8 +26,8 @@ export interface CreateRuleInput {
 export interface CreateContactRuleInput {
   contactId: string;
   name: string;
-  /** Only 'auto_reply' makes sense for a 1:1 DM — no distinct-responder threshold, no participant moderation. */
-  triggerType: 'auto_reply';
+  /** Only 'auto_reply'/'escalation' make sense for a 1:1 DM — no distinct-responder threshold, no participant moderation. */
+  triggerType: 'auto_reply' | 'escalation';
   config: unknown;
   enabled?: boolean;
 }

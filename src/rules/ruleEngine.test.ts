@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditRepository } from '../db/auditRepository';
+import { DEFAULT_CONTACT_SETTINGS, type ContactSettings } from '../db/contactsRepository';
 import { FakeSupabaseClient } from '../db/fakeSupabaseClient';
 import { DEFAULT_GROUP_SETTINGS, type GroupSettings } from '../db/groupsRepository';
 import { ModerationStateRepository } from '../db/moderationStateRepository';
@@ -1365,5 +1366,240 @@ describe('RuleEngine — moderation', () => {
     const events = await deps.auditRepository.listRecent();
     expect(events.find((e) => e.eventType === 'moderation.dry_run')).toBeTruthy();
     expect(events.find((e) => e.eventType === 'moderation.fired')).toBeFalsy();
+  });
+});
+
+describe('RuleEngine — escalation', () => {
+  it('fires on a matching phrase: notifies the owner, records an Owner Inbox item, and audits', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    deps.ownerJids.push('15550001111@s.whatsapp.net');
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Refund escalation',
+      triggerType: 'escalation',
+      config: {
+        qualify: { mode: 'contains', phrases: ['refund'] },
+        action: {
+          category: 'refund',
+          notifyOwner: true,
+          createInboxItem: true,
+          suppressAutoReply: true,
+        },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent({ text: 'I want a refund please' }),
+      'group-1',
+      settingsWith({}),
+    );
+
+    expect(sender.sentTo).toHaveLength(1);
+    expect(sender.sentTo[0]!.jid).toBe('15550001111@s.whatsapp.net');
+    const items = await deps.ownerInbox.list('acct-1');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ category: 'rule_fired' });
+    expect(items[0]!.title).toContain('refund');
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'escalation.fired')).toBeTruthy();
+  });
+
+  it('suppressAutoReply prevents an otherwise-matching auto_reply rule from firing on the same message', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Refund escalation',
+      triggerType: 'escalation',
+      config: {
+        qualify: { mode: 'contains', phrases: ['refund'] },
+        action: {
+          category: 'refund',
+          notifyOwner: false,
+          createInboxItem: false,
+          suppressAutoReply: true,
+        },
+        cooldownSeconds: 0,
+      },
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Generic auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['refund'] },
+        action: { type: 'SEND_MESSAGE', message: 'We will get back to you.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent({ text: 'I want a refund please' }),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+  });
+
+  it('suppressAutoReply: false lets a matching auto_reply rule still fire', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Refund escalation',
+      triggerType: 'escalation',
+      config: {
+        qualify: { mode: 'contains', phrases: ['refund'] },
+        action: {
+          category: 'refund',
+          notifyOwner: false,
+          createInboxItem: false,
+          suppressAutoReply: false,
+        },
+        cooldownSeconds: 0,
+      },
+    });
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Generic auto-reply',
+      triggerType: 'auto_reply',
+      config: {
+        qualify: { classifier: 'deterministic', mode: 'contains', phrases: ['refund'] },
+        action: { type: 'SEND_MESSAGE', message: 'We will get back to you.' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent({ text: 'I want a refund please' }),
+      'group-1',
+      settingsWith({ autoReplyEnabled: true }),
+    );
+
+    expect(sender.sentTo).toEqual([{ jid: 'group@g.us', text: 'We will get back to you.' }]);
+  });
+
+  it('Dry Run: never notifies/records an inbox item, logs "would have" instead', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    deps.ownerJids.push('15550001111@s.whatsapp.net');
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Refund escalation',
+      triggerType: 'escalation',
+      config: {
+        qualify: { mode: 'contains', phrases: ['refund'] },
+        action: {
+          category: 'refund',
+          notifyOwner: true,
+          createInboxItem: true,
+          suppressAutoReply: true,
+        },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent({ text: 'I want a refund please' }),
+      'group-1',
+      settingsWith({ dryRunEnabled: true }),
+    );
+
+    expect(sender.sentTo).toHaveLength(0);
+    expect(await deps.ownerInbox.list('acct-1')).toHaveLength(0);
+    const events = await deps.auditRepository.listRecent();
+    expect(events.find((e) => e.eventType === 'escalation.dry_run')).toBeTruthy();
+    expect(events.find((e) => e.eventType === 'escalation.fired')).toBeFalsy();
+  });
+
+  it('respects cooldownSeconds between fires', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    deps.ownerJids.push('15550001111@s.whatsapp.net');
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Refund escalation',
+      triggerType: 'escalation',
+      config: {
+        qualify: { mode: 'contains', phrases: ['refund'] },
+        action: {
+          category: 'refund',
+          notifyOwner: true,
+          createInboxItem: false,
+          suppressAutoReply: false,
+        },
+        cooldownSeconds: 3600,
+      },
+    });
+
+    await engine.evaluate(
+      autoReplyEvent({ text: 'refund please', senderJid: 'a@s.whatsapp.net' }),
+      'group-1',
+      settingsWith({}),
+    );
+    await engine.evaluate(
+      autoReplyEvent({ text: 'refund please', senderJid: 'b@s.whatsapp.net' }),
+      'group-1',
+      settingsWith({}),
+    );
+
+    expect(sender.sentTo).toHaveLength(1);
+  });
+
+  it('works for private contacts too (unlike moderation, which is group-only)', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildFullEngine(fake, sender);
+    deps.ownerJids.push('15550001111@s.whatsapp.net');
+    await deps.rulesRepository.createForContact({
+      contactId: 'contact-row-1',
+      name: 'Refund escalation',
+      triggerType: 'escalation',
+      config: {
+        qualify: { mode: 'contains', phrases: ['refund'] },
+        action: {
+          category: 'refund',
+          notifyOwner: true,
+          createInboxItem: true,
+          suppressAutoReply: true,
+        },
+        cooldownSeconds: 0,
+      },
+    });
+
+    const privateEvent: NormalizedMessageEvent = {
+      accountId: 'acct-1',
+      chatJid: 'contact@s.whatsapp.net',
+      context: 'private',
+      groupJid: undefined,
+      whatsappMessageId: 'MSG1',
+      senderJid: 'contact@s.whatsapp.net',
+      fromMe: false,
+      timestamp: new Date().toISOString(),
+      messageType: 'conversation',
+      text: 'I need a refund',
+      quotedWhatsappMessageId: undefined,
+      quotedParticipant: undefined,
+    };
+
+    const contactSettings: ContactSettings = {
+      ...DEFAULT_CONTACT_SETTINGS,
+      contactId: 'contact-row-1',
+      updatedAt: new Date().toISOString(),
+    };
+    await engine.evaluatePrivate(privateEvent, 'contact-row-1', contactSettings);
+
+    expect(sender.sentTo).toHaveLength(1);
+    const items = await deps.ownerInbox.list('acct-1');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ category: 'rule_fired', contactId: 'contact-row-1' });
   });
 });

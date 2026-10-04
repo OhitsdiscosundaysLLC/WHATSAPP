@@ -201,6 +201,7 @@
                   <option value="response_threshold">N distinct people respond</option>
                   <option value="auto_reply">Auto-reply</option>
                   <option value="moderation">Moderation</option>
+                  <option value="escalation">Escalation</option>
                 </select>
               </div>
               <div class="field">
@@ -283,6 +284,48 @@
                   </div>
                   <label class="toggle">
                     <input type="checkbox" id="rule-detect-links" />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- escalation only -->
+              <div id="rule-fields-escalation" class="hidden">
+                <div class="field">
+                  <label class="field-label" for="rule-category">Category</label>
+                  <input
+                    type="text"
+                    id="rule-category"
+                    placeholder="e.g. refund, complaint, legal, manager, emergency, urgent"
+                  />
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Notify owner</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-notify-owner" checked />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Create Owner Inbox item</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-create-inbox-item" checked />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Suppress auto-reply for this message</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-suppress-auto-reply" checked />
                     <span class="toggle-track"></span>
                     <span class="toggle-thumb"></span>
                   </label>

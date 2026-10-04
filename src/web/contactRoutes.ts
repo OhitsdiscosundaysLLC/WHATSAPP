@@ -14,9 +14,10 @@ const log = createChildLogger('web:contacts');
 const MATCH_MODES = ['contains', 'exact', 'keyword_any'] as const;
 const AUTO_REPLY_ACTION_TYPES = ['SEND_MESSAGE', 'AI_REPLY'] as const;
 
-/** Friendly shape the dashboard's contact rule-builder form submits — same auto_reply-only shape as group rules. */
+/** Friendly shape the dashboard's contact rule-builder form submits — same shape as the relevant group rule forms. */
 interface ContactRuleFormInput {
   name?: unknown;
+  triggerType?: unknown;
   phrases?: unknown;
   matchMode?: unknown;
   classifier?: unknown;
@@ -24,7 +25,14 @@ interface ContactRuleFormInput {
   cooldownSeconds?: unknown;
   actionType?: unknown;
   message?: unknown;
+  // escalation
+  category?: unknown;
+  notifyOwner?: unknown;
+  createInboxItem?: unknown;
+  suppressAutoReply?: unknown;
 }
+
+const CONTACT_TRIGGER_TYPES = ['auto_reply', 'escalation'] as const;
 
 function autoReplyFormToConfig(body: ContactRuleFormInput): unknown {
   const useAi = body.classifier === 'ai';
@@ -52,6 +60,31 @@ function autoReplyFormToConfig(body: ContactRuleFormInput): unknown {
       : { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' };
 
   return { qualify, action, cooldownSeconds: Number(body.cooldownSeconds ?? 0) };
+}
+
+function escalationFormToConfig(body: ContactRuleFormInput): unknown {
+  const phrases = Array.isArray(body.phrases)
+    ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  const matchMode = MATCH_MODES.includes(body.matchMode as (typeof MATCH_MODES)[number])
+    ? body.matchMode
+    : 'contains';
+
+  return {
+    qualify: { mode: matchMode, phrases },
+    action: {
+      category: typeof body.category === 'string' && body.category.trim() ? body.category : 'other',
+      notifyOwner: body.notifyOwner === undefined ? true : Boolean(body.notifyOwner),
+      createInboxItem: body.createInboxItem === undefined ? true : Boolean(body.createInboxItem),
+      suppressAutoReply:
+        body.suppressAutoReply === undefined ? true : Boolean(body.suppressAutoReply),
+    },
+    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+  };
+}
+
+function contactFormToConfig(triggerType: string, body: ContactRuleFormInput): unknown {
+  return triggerType === 'escalation' ? escalationFormToConfig(body) : autoReplyFormToConfig(body);
 }
 
 function requireSupabase(res: Response): boolean {
@@ -314,13 +347,18 @@ export function createContactRouter(): Router {
       res.status(400).json({ error: 'invalid_rule', message: 'A rule name is required.' });
       return;
     }
+    const triggerType = CONTACT_TRIGGER_TYPES.includes(
+      body?.triggerType as (typeof CONTACT_TRIGGER_TYPES)[number],
+    )
+      ? (body?.triggerType as (typeof CONTACT_TRIGGER_TYPES)[number])
+      : 'auto_reply';
 
     try {
       const rule = await rulesRepository.createForContact({
         contactId: id,
         name,
-        triggerType: 'auto_reply',
-        config: autoReplyFormToConfig(body ?? {}),
+        triggerType,
+        config: contactFormToConfig(triggerType, body ?? {}),
       });
 
       const auditRepository = new AuditRepository(supabase);
@@ -362,9 +400,13 @@ export function createContactRouter(): Router {
       if (
         body?.phrases !== undefined ||
         body?.aiInstructions !== undefined ||
-        body?.actionType !== undefined
+        body?.actionType !== undefined ||
+        body?.category !== undefined ||
+        body?.notifyOwner !== undefined ||
+        body?.createInboxItem !== undefined ||
+        body?.suppressAutoReply !== undefined
       ) {
-        patch.config = autoReplyFormToConfig({
+        patch.config = contactFormToConfig(existing.triggerType, {
           ...(existing.config as ContactRuleFormInput),
           ...body,
         });

@@ -22,6 +22,7 @@ import { qualifiesForModeration } from './moderation/moderationQualifier';
 import type {
   ActionConfig,
   AutoReplyConfig,
+  EscalationConfig,
   ModerationActionConfig,
   ModerationConfig,
   ResponseThresholdConfig,
@@ -80,17 +81,31 @@ export class RuleEngine {
     if (event.fromMe || event.context !== 'group' || !event.groupJid) return;
 
     const rules = await this.deps.rulesRepository.listEnabledByGroup(groupId);
+
+    // Escalation rules run first, regardless of their position in `rules`,
+    // so a `suppressAutoReply` decision is known before any auto_reply rule
+    // in this same pass is dispatched — see evaluateEscalation's doc comment.
+    let suppressAutoReply = false;
+    for (const rule of rules) {
+      if (rule.triggerType === 'escalation') {
+        const suppressed = await this.evaluateEscalation(rule, event, groupId, undefined, settings);
+        if (suppressed) suppressAutoReply = true;
+      }
+    }
+
     for (const rule of rules) {
       switch (rule.triggerType) {
         case 'response_threshold':
           await this.evaluateResponseThreshold(rule, event, groupId, settings);
           break;
         case 'auto_reply':
-          await this.evaluateAutoReply(rule, event, groupId, settings);
+          if (!suppressAutoReply) await this.evaluateAutoReply(rule, event, groupId, settings);
           break;
         case 'moderation':
           await this.evaluateModeration(rule, event, groupId, settings);
           break;
+        case 'escalation':
+          break; // already handled above
         default:
           this.deps.logger.warn(
             { ruleId: rule.id, triggerType: rule.triggerType },
@@ -116,7 +131,23 @@ export class RuleEngine {
     if (event.fromMe || event.context !== 'private') return;
 
     const rules = await this.deps.rulesRepository.listEnabledByContact(contactId);
+
+    let suppressAutoReply = false;
     for (const rule of rules) {
+      if (rule.triggerType === 'escalation') {
+        const suppressed = await this.evaluateEscalation(
+          rule,
+          event,
+          undefined,
+          contactId,
+          settings,
+        );
+        if (suppressed) suppressAutoReply = true;
+      }
+    }
+
+    for (const rule of rules) {
+      if (rule.triggerType === 'escalation') continue; // already handled above
       if (rule.triggerType !== 'auto_reply') {
         this.deps.logger.warn(
           { ruleId: rule.id, triggerType: rule.triggerType },
@@ -124,7 +155,7 @@ export class RuleEngine {
         );
         continue;
       }
-      await this.evaluateContactAutoReply(rule, event, contactId, settings);
+      if (!suppressAutoReply) await this.evaluateContactAutoReply(rule, event, contactId, settings);
     }
   }
 
@@ -278,6 +309,138 @@ export class RuleEngine {
       { ruleId: rule.id, groupId, targetMessageId, actionStatus: result.status },
       'Rule fired',
     );
+  }
+
+  /**
+   * `escalation` (Phase 8): deterministic phrase matching for urgent/
+   * sensitive intents (refund, complaint, legal, emergency, ...) that
+   * should reach the owner rather than being auto-replied to. Works for
+   * both groups and private contacts — unlike moderation, there is no
+   * participant to remove and nothing group-specific about "this message
+   * needs a human." Evaluated BEFORE every auto_reply rule in the same
+   * message (see `evaluate()`/`evaluatePrivate()`'s two-pass dispatch), so
+   * `suppressAutoReply` can actually prevent this message from also
+   * triggering an auto-reply, regardless of rule ordering. Returns `true`
+   * when this rule fired AND its `suppressAutoReply` is on, so the caller
+   * knows to skip auto_reply dispatch for this message.
+   */
+  private async evaluateEscalation(
+    rule: GroupRule,
+    event: NormalizedMessageEvent,
+    groupId: string | undefined,
+    contactId: string | undefined,
+    settings: GroupSettings | ContactSettings,
+  ): Promise<boolean> {
+    const config = rule.config as EscalationConfig;
+    const accountId = event.accountId;
+
+    const qualifies = await this.deps.classifier.classify(event.text, config.qualify);
+    if (!qualifies) return false;
+
+    if (config.cooldownSeconds > 0) {
+      const lastFiredAt = await this.deps.ruleStateRepository.getLastFiredAt(rule.id);
+      if (lastFiredAt) {
+        const elapsedSeconds = (Date.now() - lastFiredAt.getTime()) / 1000;
+        if (elapsedSeconds < config.cooldownSeconds) {
+          await this.deps.auditRepository.recordAction({
+            accountId,
+            groupId,
+            contactId,
+            ruleId: rule.id,
+            triggerWhatsappMessageId: event.whatsappMessageId,
+            actionType: 'LOG_ONLY',
+            status: 'skipped',
+            detail: { reason: 'cooldown_active' },
+          });
+          return false;
+        }
+      }
+    }
+
+    await this.deps.ruleStateRepository.recordFired(rule.id, new Date());
+
+    if (settings.dryRunEnabled) {
+      await this.deps.auditRepository.recordAction({
+        accountId,
+        groupId,
+        contactId,
+        ruleId: rule.id,
+        triggerWhatsappMessageId: event.whatsappMessageId,
+        actionType: 'LOG_ONLY',
+        status: 'skipped',
+        detail: {
+          reason: 'dry_run',
+          wouldHaveActed: `escalate as "${config.action.category}"${config.action.suppressAutoReply ? ' and suppress auto-reply' : ''}`,
+        },
+      });
+      await this.deps.auditRepository.recordEvent({
+        accountId,
+        groupId,
+        contactId,
+        eventType: 'escalation.dry_run',
+        detail: { ruleId: rule.id, ruleName: rule.name, category: config.action.category },
+      });
+      this.deps.logger.info(
+        { ruleId: rule.id, groupId, contactId, category: config.action.category },
+        'Escalation rule would have fired (dry run)',
+      );
+      return false; // a dry run never actually suppresses anything real
+    }
+
+    if (config.action.notifyOwner) {
+      for (const ownerJid of this.deps.ownerJids) {
+        try {
+          await this.deps.sender.sendTextMessage(
+            ownerJid,
+            `🚨 Escalation (${config.action.category}): "${event.text ?? '(no text)'}"`,
+          );
+        } catch (err) {
+          this.deps.logger.warn({ err, ownerJid }, 'Failed to notify owner of escalation');
+        }
+      }
+    }
+
+    if (config.action.createInboxItem) {
+      await this.deps.ownerInbox.record({
+        accountId,
+        ...(groupId ? { groupId } : {}),
+        ...(contactId ? { contactId } : {}),
+        category: 'rule_fired',
+        title: `Escalation: ${config.action.category}`,
+        detail: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          category: config.action.category,
+          text: event.text,
+          senderJid: event.senderJid,
+        },
+      });
+    }
+
+    await this.deps.auditRepository.recordAction({
+      accountId,
+      groupId,
+      contactId,
+      ruleId: rule.id,
+      triggerWhatsappMessageId: event.whatsappMessageId,
+      actionType: 'NOTIFY_OWNER',
+      status: 'success',
+      detail: { category: config.action.category },
+    });
+    await this.deps.auditRepository.recordEvent({
+      accountId,
+      groupId,
+      contactId,
+      eventType: 'escalation.fired',
+      detail: { ruleId: rule.id, ruleName: rule.name, category: config.action.category },
+    });
+
+    this.deps.logger.info(
+      { ruleId: rule.id, groupId, contactId, category: config.action.category },
+      'Escalation rule fired',
+    );
+
+    return config.action.suppressAutoReply;
   }
 
   /**

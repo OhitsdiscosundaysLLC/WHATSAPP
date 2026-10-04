@@ -491,17 +491,28 @@
   const rulesError = document.getElementById('rules-error');
 
   function updateRuleFormFields() {
-    const usesAi = document.getElementById('rule-classifier').value === 'ai';
-    document.getElementById('rule-fields-phrases').classList.toggle('hidden', usesAi);
+    const triggerType = document.getElementById('rule-trigger-type').value;
+    const isEscalation = triggerType === 'escalation';
+    const usesAi = !isEscalation && document.getElementById('rule-classifier').value === 'ai';
+    document
+      .getElementById('rule-fields-phrases')
+      .classList.toggle('hidden', isEscalation ? false : usesAi);
     document.getElementById('rule-ai-instructions-field').classList.toggle('hidden', !usesAi);
+    document.getElementById('rule-classifier-field').classList.toggle('hidden', isEscalation);
+    document.getElementById('rule-fields-escalation').classList.toggle('hidden', !isEscalation);
+    document.getElementById('rule-action-type-field').classList.toggle('hidden', isEscalation);
     updateRuleMessageVisibility();
   }
 
   function updateRuleMessageVisibility() {
+    const triggerType = document.getElementById('rule-trigger-type').value;
     const action = document.getElementById('rule-action-type').value;
-    document.getElementById('rule-message-field').classList.toggle('hidden', action === 'AI_REPLY');
+    document
+      .getElementById('rule-message-field')
+      .classList.toggle('hidden', triggerType === 'escalation' || action === 'AI_REPLY');
   }
 
+  document.getElementById('rule-trigger-type').addEventListener('change', updateRuleFormFields);
   document.getElementById('rule-classifier').addEventListener('change', updateRuleFormFields);
   document
     .getElementById('rule-action-type')
@@ -522,6 +533,28 @@
   function renderRuleSummary(rule) {
     const cfg = rule.config;
     const cooldown = cfg.cooldownSeconds > 0 ? ', cooldown ' + cfg.cooldownSeconds + 's' : '';
+
+    if (rule.triggerType === 'escalation') {
+      const q = cfg.qualify;
+      const phrasesText = q.phrases.map((p) => '"' + p + '"').join(', ');
+      const parts = [];
+      if (cfg.action.notifyOwner) parts.push('notify the owner');
+      if (cfg.action.createInboxItem) parts.push('create an Owner Inbox item');
+      if (cfg.action.suppressAutoReply) parts.push('suppress auto-reply for that message');
+      return (
+        'When the message ' +
+        matchModeLabel(q.mode) +
+        ' ' +
+        phrasesText +
+        ', escalate as "' +
+        cfg.action.category +
+        '": ' +
+        (parts.join(', ') || 'log only') +
+        cooldown +
+        '.'
+      );
+    }
+
     const qualifyText =
       cfg.qualify.classifier === 'ai'
         ? 'AI decides the message ' + cfg.qualify.aiInstructions
@@ -544,7 +577,7 @@
       top.className = 'rule-card-top';
       const name = document.createElement('div');
       name.className = 'rule-name';
-      name.textContent = rule.name;
+      name.textContent = rule.name + '  ·  ' + rule.triggerType;
       const pill = document.createElement('span');
       pill.className = 'status-pill ' + (rule.enabled ? 'status-connected' : 'status-neutral');
       pill.innerHTML = '<span class="status-dot"></span><span></span>';
@@ -627,6 +660,7 @@
 
     const body = {
       name: document.getElementById('rule-name').value.trim(),
+      triggerType: document.getElementById('rule-trigger-type').value,
       phrases,
       matchMode: document.getElementById('rule-match-mode').value,
       classifier: document.getElementById('rule-classifier').value,
@@ -634,6 +668,10 @@
       cooldownSeconds: document.getElementById('rule-cooldown').value,
       actionType: document.getElementById('rule-action-type').value,
       message: document.getElementById('rule-message').value,
+      category: document.getElementById('rule-category').value.trim(),
+      notifyOwner: document.getElementById('rule-notify-owner').checked,
+      createInboxItem: document.getElementById('rule-create-inbox-item').checked,
+      suppressAutoReply: document.getElementById('rule-suppress-auto-reply').checked,
     };
 
     try {
@@ -652,6 +690,10 @@
       document.getElementById('rule-ai-instructions').value = '';
       document.getElementById('rule-cooldown').value = '0';
       document.getElementById('rule-message').value = '';
+      document.getElementById('rule-category').value = '';
+      document.getElementById('rule-notify-owner').checked = true;
+      document.getElementById('rule-create-inbox-item').checked = true;
+      document.getElementById('rule-suppress-auto-reply').checked = true;
       await loadRules();
     } catch (err) {
       if (err.message !== 'unauthenticated') rulesError.textContent = 'Could not reach the server.';

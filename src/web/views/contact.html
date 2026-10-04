@@ -210,19 +210,26 @@
               <button class="btn btn-primary btn-sm" id="new-rule-btn">+ New Rule</button>
             </div>
             <p class="muted" style="font-size: 13px; margin-top: -8px">
-              A DM has exactly one other participant, so only auto-reply rules apply here — no
-              distinct-responder threshold, no moderation.
+              A DM has exactly one other participant, so only auto-reply and escalation rules apply
+              here — no distinct-responder threshold, no moderation.
             </p>
             <div id="rules-error" class="error-text"></div>
 
             <div id="rule-form" class="card hidden" style="padding: 18px; margin-bottom: 14px">
-              <h3 style="margin: 0 0 12px; font-size: 15px">New auto-reply rule</h3>
+              <h3 style="margin: 0 0 12px; font-size: 15px">New rule</h3>
 
+              <div class="field">
+                <label class="field-label" for="rule-trigger-type">Rule type</label>
+                <select id="rule-trigger-type">
+                  <option value="auto_reply">Auto-reply</option>
+                  <option value="escalation">Escalation</option>
+                </select>
+              </div>
               <div class="field">
                 <label class="field-label" for="rule-name">Name</label>
                 <input type="text" id="rule-name" placeholder="e.g. Hours auto-reply" />
               </div>
-              <div class="field">
+              <div class="field" id="rule-classifier-field">
                 <label class="field-label" for="rule-classifier">Qualification method</label>
                 <select id="rule-classifier">
                   <option value="deterministic">Keyword/phrase match</option>
@@ -260,11 +267,53 @@
                 ></textarea>
               </div>
 
+              <!-- escalation only -->
+              <div id="rule-fields-escalation" class="hidden">
+                <div class="field">
+                  <label class="field-label" for="rule-category">Category</label>
+                  <input
+                    type="text"
+                    id="rule-category"
+                    placeholder="e.g. refund, complaint, legal, manager, emergency, urgent"
+                  />
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Notify owner</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-notify-owner" checked />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Create Owner Inbox item</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-create-inbox-item" checked />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <div class="toggle-label">
+                    <div class="toggle-label-text">Suppress auto-reply for this message</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="rule-suppress-auto-reply" checked />
+                    <span class="toggle-track"></span>
+                    <span class="toggle-thumb"></span>
+                  </label>
+                </div>
+              </div>
+
               <div class="field">
                 <label class="field-label" for="rule-cooldown">Cooldown (seconds, 0 = none)</label>
                 <input type="text" inputmode="numeric" id="rule-cooldown" value="0" />
               </div>
-              <div class="field">
+              <div class="field" id="rule-action-type-field">
                 <label class="field-label" for="rule-action-type">Reply with</label>
                 <select id="rule-action-type">
                   <option value="SEND_MESSAGE">A fixed message</option>

@@ -645,6 +645,7 @@
       ['DELETE_MESSAGE', 'Delete the message (requires destructive actions enabled)'],
       ['REMOVE_USER', 'Remove the participant (requires destructive actions enabled)'],
     ],
+    escalation: [],
   };
 
   function updateRuleFormFields() {
@@ -667,6 +668,9 @@
       .getElementById('rule-fields-moderation')
       .classList.toggle('hidden', triggerType !== 'moderation');
     document
+      .getElementById('rule-fields-escalation')
+      .classList.toggle('hidden', triggerType !== 'escalation');
+    document
       .getElementById('rule-ai-instructions-field')
       .classList.toggle(
         'hidden',
@@ -674,6 +678,11 @@
           triggerType === 'auto_reply' && document.getElementById('rule-classifier').value === 'ai'
         ),
       );
+
+    document
+      .getElementById('rule-action-type')
+      .closest('.field')
+      .classList.toggle('hidden', triggerType === 'escalation');
 
     const actionSelect = document.getElementById('rule-action-type');
     actionSelect.innerHTML = '';
@@ -687,12 +696,14 @@
   }
 
   function updateRuleMessageVisibility() {
+    const triggerType = document.getElementById('rule-trigger-type').value;
     const action = document.getElementById('rule-action-type').value;
     document
       .getElementById('rule-message-field')
       .classList.toggle(
         'hidden',
-        action === 'LOG_ONLY' ||
+        triggerType === 'escalation' ||
+          action === 'LOG_ONLY' ||
           action === 'AI_REPLY' ||
           action === 'DELETE_MESSAGE' ||
           action === 'REMOVE_USER',
@@ -771,6 +782,26 @@
         (parts.join(' or ') || '(nothing configured)') +
         ', ' +
         actionText(cfg.action) +
+        cooldown +
+        '.'
+      );
+    }
+    if (rule.triggerType === 'escalation') {
+      const q = cfg.qualify;
+      const phrasesText = q.phrases.map((p) => '"' + p + '"').join(', ');
+      const parts = [];
+      if (cfg.action.notifyOwner) parts.push('notify the owner');
+      if (cfg.action.createInboxItem) parts.push('create an Owner Inbox item');
+      if (cfg.action.suppressAutoReply) parts.push('suppress auto-reply for that message');
+      return (
+        'When the message ' +
+        matchModeLabel(q.mode) +
+        ' ' +
+        phrasesText +
+        ', escalate as "' +
+        cfg.action.category +
+        '": ' +
+        (parts.join(', ') || 'log only') +
         cooldown +
         '.'
       );
@@ -892,6 +923,10 @@
       cooldownSeconds: document.getElementById('rule-cooldown').value,
       actionType: document.getElementById('rule-action-type').value,
       message: document.getElementById('rule-message').value,
+      category: document.getElementById('rule-category').value.trim(),
+      notifyOwner: document.getElementById('rule-notify-owner').checked,
+      createInboxItem: document.getElementById('rule-create-inbox-item').checked,
+      suppressAutoReply: document.getElementById('rule-suppress-auto-reply').checked,
     };
 
     try {
@@ -912,6 +947,10 @@
       document.getElementById('rule-threshold').value = '5';
       document.getElementById('rule-cooldown').value = '0';
       document.getElementById('rule-message').value = '';
+      document.getElementById('rule-category').value = '';
+      document.getElementById('rule-notify-owner').checked = true;
+      document.getElementById('rule-create-inbox-item').checked = true;
+      document.getElementById('rule-suppress-auto-reply').checked = true;
       await loadRules();
     } catch (err) {
       if (err.message !== 'unauthenticated') rulesError.textContent = 'Could not reach the server.';
