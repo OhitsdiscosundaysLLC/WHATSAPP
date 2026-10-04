@@ -1,10 +1,12 @@
 import { Router, type Request, type Response } from 'express';
+import { config } from '../config/config';
 import { AuditRepository } from '../db/auditRepository';
 import { ContactsRepository, type ContactSettingsPatch } from '../db/contactsRepository';
 import { DELETED_MESSAGE_ALERT_MODES, type DeletedMessageAlertMode } from '../db/groupsRepository';
 import { MessagesRepository } from '../db/messagesRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
+import { simulateMessage } from '../rules/ruleSimulator';
 import { createChildLogger } from '../services/logger';
 import { accountManager } from '../whatsapp/accountManager';
 import { attachSession, requireAuth, requireCsrf } from './authMiddleware';
@@ -318,6 +320,67 @@ export function createContactRouter(): Router {
     });
 
     res.status(200).json({ settings });
+  });
+
+  router.post('/:id/simulate', requireCsrf, async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const supabase = getSupabaseClient();
+    const contact = await new ContactsRepository(supabase).getById(id);
+    if (!contact) {
+      res.status(404).json({ error: 'contact_not_found' });
+      return;
+    }
+
+    const body = req.body as
+      | {
+          senderJid?: unknown;
+          text?: unknown;
+          messageType?: unknown;
+          quotedWhatsappMessageId?: unknown;
+          quotedParticipant?: unknown;
+          timestamp?: unknown;
+        }
+      | undefined;
+    const senderJid = typeof body?.senderJid === 'string' ? body.senderJid.trim() : '';
+    const text = typeof body?.text === 'string' ? body.text : '';
+    if (!senderJid || !text) {
+      res.status(400).json({
+        error: 'invalid_request',
+        message: 'senderJid and text are required.',
+      });
+      return;
+    }
+
+    try {
+      const outcome = await simulateMessage(
+        supabase,
+        config.authorization.ownerNumbers.map((n) => `${n}@s.whatsapp.net`),
+        log,
+        {
+          contactId: id,
+          senderJid,
+          text,
+          ...(typeof body?.messageType === 'string' ? { messageType: body.messageType } : {}),
+          ...(typeof body?.quotedWhatsappMessageId === 'string' && body.quotedWhatsappMessageId
+            ? { quotedWhatsappMessageId: body.quotedWhatsappMessageId }
+            : {}),
+          ...(typeof body?.quotedParticipant === 'string' && body.quotedParticipant
+            ? { quotedParticipant: body.quotedParticipant }
+            : {}),
+          ...(typeof body?.timestamp === 'string' && body.timestamp
+            ? { timestamp: body.timestamp }
+            : {}),
+        },
+      );
+      res.status(200).json(outcome);
+    } catch (err) {
+      log.warn({ err, contactId: id }, 'Rule simulation failed');
+      res.status(400).json({
+        error: 'simulation_failed',
+        message: err instanceof Error ? err.message : 'Could not run the simulation.',
+      });
+    }
   });
 
   router.get('/:id/rules', async (req: Request, res: Response) => {

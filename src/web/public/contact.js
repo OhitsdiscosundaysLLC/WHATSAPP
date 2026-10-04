@@ -414,6 +414,107 @@
     }
   });
 
+  // ---------- Rule Simulator ----------
+
+  const simError = document.getElementById('sim-error');
+  const simResults = document.getElementById('sim-results');
+
+  const MATCHED_LABEL = {
+    yes: { text: 'MATCHED', cls: 'status-connected' },
+    no: { text: 'NOT MATCHED', cls: 'status-neutral' },
+    ai_not_simulated: { text: 'AI — NOT SIMULATED', cls: 'status-neutral' },
+  };
+
+  function renderSimResults(outcome) {
+    simResults.innerHTML = '';
+
+    if (outcome.notes && outcome.notes.length) {
+      const notes = document.createElement('div');
+      notes.className = 'card';
+      notes.style.padding = '12px 16px';
+      notes.style.marginBottom = '14px';
+      notes.style.fontSize = '13px';
+      for (const note of outcome.notes) {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.style.margin = '4px 0';
+        p.textContent = 'ℹ️ ' + note;
+        notes.appendChild(p);
+      }
+      simResults.appendChild(notes);
+    }
+
+    if (!outcome.rules.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No enabled rules to evaluate.';
+      simResults.appendChild(empty);
+      return;
+    }
+
+    for (const rule of outcome.rules) {
+      const card = document.createElement('div');
+      card.className = 'card rule-card';
+      card.style.marginBottom = '10px';
+      card.style.padding = '14px';
+
+      const top = document.createElement('div');
+      top.className = 'rule-card-top';
+      const name = document.createElement('div');
+      name.className = 'rule-name';
+      name.textContent = rule.ruleName + '  ·  ' + rule.triggerType;
+      const pill = document.createElement('span');
+      const label = MATCHED_LABEL[rule.matched] || MATCHED_LABEL.no;
+      pill.className = 'status-pill ' + label.cls;
+      pill.innerHTML = '<span class="status-dot"></span><span></span>';
+      pill.querySelector('span:last-child').textContent = label.text;
+      top.appendChild(name);
+      top.appendChild(pill);
+      card.appendChild(top);
+
+      const reason = document.createElement('div');
+      reason.className = 'rule-summary';
+      reason.textContent = rule.reason;
+      card.appendChild(reason);
+
+      if (rule.wouldHaveActed) {
+        const acted = document.createElement('div');
+        acted.className = 'rule-summary';
+        acted.style.fontWeight = '600';
+        acted.textContent = 'Would do: ' + rule.wouldHaveActed;
+        card.appendChild(acted);
+      }
+
+      simResults.appendChild(card);
+    }
+  }
+
+  document.getElementById('run-sim-btn').addEventListener('click', async (event) => {
+    simError.textContent = '';
+    const text = document.getElementById('sim-text').value;
+    if (!text.trim()) {
+      simError.textContent = 'Message text is required.';
+      return;
+    }
+    const senderJid = (currentContact && currentContact.whatsappJid) || '';
+
+    try {
+      const res = await api('/api/contacts/' + contactId + '/simulate', {
+        method: 'POST',
+        body: JSON.stringify({ senderJid, text }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        simError.textContent = data.message || 'Could not run the simulation.';
+        return;
+      }
+      renderSimResults(data);
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated') simError.textContent = 'Could not reach the server.';
+    }
+  });
+
   // ---------- Archive ----------
 
   const ARCHIVE_TOGGLES = [

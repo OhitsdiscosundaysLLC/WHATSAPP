@@ -576,6 +576,76 @@ describe('group routes — Human Takeover', () => {
   });
 });
 
+describe('group routes — Rule Simulator', () => {
+  it('rejects without a CSRF token', async () => {
+    const { cookie } = await login();
+    const groupId = await seedGroup('sim-csrf@g.us', 'Sim CSRF Group');
+    await request(app)
+      .post(`/api/groups/${groupId}/simulate`)
+      .set('Cookie', cookie)
+      .send({ senderJid: 'a@s.whatsapp.net', text: 'hi' })
+      .expect(403);
+  });
+
+  it('404s for an unknown group', async () => {
+    const { cookie, csrfToken } = await login();
+    await request(app)
+      .post('/api/groups/does-not-exist/simulate')
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ senderJid: 'a@s.whatsapp.net', text: 'hi' })
+      .expect(404);
+  });
+
+  it('rejects missing senderJid/text with 400', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('sim-invalid@g.us', 'Sim Invalid Group');
+    await request(app)
+      .post(`/api/groups/${groupId}/simulate`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ senderJid: '', text: '' })
+      .expect(400);
+  });
+
+  it('reports a matching auto_reply rule, never actually sending anything', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('sim-match@g.us', 'Sim Match Group');
+    const { GroupsRepository } = await import('../db/groupsRepository');
+    const groupsRepository = new GroupsRepository(fakeClient as never);
+    await groupsRepository.updateSettings(groupId, { autoReplyEnabled: true });
+
+    await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({
+        name: 'Hours auto-reply',
+        triggerType: 'auto_reply',
+        phrases: ['hours'],
+        matchMode: 'contains',
+        classifier: 'deterministic',
+        actionType: 'SEND_MESSAGE',
+        message: 'We are open 9-5.',
+        cooldownSeconds: 0,
+      })
+      .expect(201);
+
+    const res = await request(app)
+      .post(`/api/groups/${groupId}/simulate`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ senderJid: 'alice@s.whatsapp.net', text: 'what are your hours?' })
+      .expect(200);
+
+    expect(res.body.rules).toHaveLength(1);
+    expect(res.body.rules[0]).toMatchObject({
+      matched: 'yes',
+      wouldHaveActed: 'send message: "We are open 9-5."',
+    });
+  });
+});
+
 describe('group routes — deleted messages and media archive', () => {
   it('rejects unauthenticated access to deleted messages', async () => {
     await request(app).get('/api/groups/some-id/deleted-messages').expect(401);

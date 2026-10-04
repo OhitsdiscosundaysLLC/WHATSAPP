@@ -41,6 +41,7 @@
           <button class="tab-btn active" data-section-tab="general" type="button">General</button>
           <button class="tab-btn" data-section-tab="ai" type="button">AI</button>
           <button class="tab-btn" data-section-tab="rules" type="button">Rules</button>
+          <button class="tab-btn" data-section-tab="simulator" type="button">Simulator</button>
           <button class="tab-btn" data-section-tab="moderation" type="button">Moderation</button>
           <button class="tab-btn" data-section-tab="archive" type="button">Archive</button>
           <button class="tab-btn" data-section-tab="calls" type="button">Calls</button>
@@ -357,6 +358,46 @@
             <div id="rules-empty" class="empty-state hidden">
               <p>No rules yet for this group.</p>
             </div>
+          </section>
+        </section>
+
+        <!-- ---------- SIMULATOR ---------- -->
+        <section class="section-tab hidden" data-section="simulator">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Rule Simulator</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Runs the real rule engine against a hypothetical message — never sends, deletes,
+              removes a participant, or notifies anyone for real. Cooldowns and distinct-responder
+              progress are simulated fresh each time, not read from this group's live state.
+            </p>
+            <div id="sim-error" class="error-text"></div>
+
+            <div class="field">
+              <label class="field-label" for="sim-sender">Sender JID</label>
+              <input
+                type="text"
+                id="sim-sender"
+                placeholder="e.g. 15551234567@s.whatsapp.net"
+                value="15550009999@s.whatsapp.net"
+              />
+            </div>
+            <div class="field">
+              <label class="field-label" for="sim-text">Message text</label>
+              <textarea id="sim-text" placeholder="What are your hours?"></textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="sim-quoted">Quoted message ID (optional)</label>
+              <input
+                type="text"
+                id="sim-quoted"
+                placeholder="Required to test 'N distinct people respond' rules"
+              />
+            </div>
+            <button class="btn btn-primary btn-sm" id="run-sim-btn">Run Simulation</button>
+
+            <div id="sim-results" style="margin-top: 18px"></div>
           </section>
         </section>
 

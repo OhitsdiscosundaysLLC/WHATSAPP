@@ -265,3 +265,64 @@ describe('contact routes — rules', () => {
     expect(list.body.rules).toHaveLength(0);
   });
 });
+
+describe('contact routes — Rule Simulator', () => {
+  it('rejects without a CSRF token', async () => {
+    const { cookie } = await login();
+    const contactId = await seedContact('sim-csrf@s.whatsapp.net');
+    await request(app)
+      .post(`/api/contacts/${contactId}/simulate`)
+      .set('Cookie', cookie)
+      .send({ senderJid: 'sim-csrf@s.whatsapp.net', text: 'hi' })
+      .expect(403);
+  });
+
+  it('404s for an unknown contact', async () => {
+    const { cookie, csrfToken } = await login();
+    await request(app)
+      .post('/api/contacts/does-not-exist/simulate')
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ senderJid: 'a@s.whatsapp.net', text: 'hi' })
+      .expect(404);
+  });
+
+  it('rejects missing senderJid/text with 400', async () => {
+    const { cookie, csrfToken } = await login();
+    const contactId = await seedContact('sim-invalid@s.whatsapp.net');
+    await request(app)
+      .post(`/api/contacts/${contactId}/simulate`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ senderJid: '', text: '' })
+      .expect(400);
+  });
+
+  it('reports a matching auto_reply rule, never actually sending anything', async () => {
+    const { cookie, csrfToken } = await login();
+    const contactId = await seedContact('sim-match@s.whatsapp.net');
+    const { ContactsRepository } = await import('../db/contactsRepository');
+    const contactsRepository = new ContactsRepository(fakeClient as never);
+    await contactsRepository.updateSettings(contactId, { privateAutoReplyEnabled: true });
+
+    await request(app)
+      .post(`/api/contacts/${contactId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send(VALID_RULE_BODY)
+      .expect(201);
+
+    const res = await request(app)
+      .post(`/api/contacts/${contactId}/simulate`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ senderJid: 'sim-match@s.whatsapp.net', text: 'what are your hours?' })
+      .expect(200);
+
+    expect(res.body.rules).toHaveLength(1);
+    expect(res.body.rules[0]).toMatchObject({
+      matched: 'yes',
+      wouldHaveActed: 'send message: "We are open 9-5."',
+    });
+  });
+});

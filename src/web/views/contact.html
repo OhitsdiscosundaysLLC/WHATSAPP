@@ -63,6 +63,7 @@
           <button class="tab-btn active" data-section-tab="general" type="button">General</button>
           <button class="tab-btn" data-section-tab="ai" type="button">AI</button>
           <button class="tab-btn" data-section-tab="rules" type="button">Auto Reply</button>
+          <button class="tab-btn" data-section-tab="simulator" type="button">Simulator</button>
           <button class="tab-btn" data-section-tab="archive" type="button">Archive</button>
           <button class="tab-btn" data-section-tab="activity" type="button">Activity</button>
         </div>
@@ -339,6 +340,29 @@
             <div id="rules-empty" class="empty-state hidden">
               <p>No auto-reply rules yet for this contact.</p>
             </div>
+          </section>
+        </section>
+
+        <!-- ---------- SIMULATOR ---------- -->
+        <section class="section-tab hidden" data-section="simulator">
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>Rule Simulator</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Runs the real rule engine against a hypothetical message from this contact — never
+              sends anything for real. Cooldown state is simulated fresh each time, not read from
+              this contact's live state.
+            </p>
+            <div id="sim-error" class="error-text"></div>
+
+            <div class="field">
+              <label class="field-label" for="sim-text">Message text</label>
+              <textarea id="sim-text" placeholder="What are your hours?"></textarea>
+            </div>
+            <button class="btn btn-primary btn-sm" id="run-sim-btn">Run Simulation</button>
+
+            <div id="sim-results" style="margin-top: 18px"></div>
           </section>
         </section>
 
