@@ -40,6 +40,16 @@ function createFakeSocket() {
     logout: vi.fn(async () => {}),
     waitForSocketOpen: vi.fn(async () => {}),
     requestPairingCode: vi.fn(async (_phoneNumber: string) => 'ABCD1234'),
+    sendMessage: vi.fn(
+      async (
+        _jid: string,
+        _content: unknown,
+      ): Promise<{ key: { id: string; remoteJid: string; fromMe: boolean } } | undefined> => ({
+        key: { id: 'WAMID-SENT-1', remoteJid: _jid, fromMe: true },
+      }),
+    ),
+    user: { id: '15551234567@s.whatsapp.net', jid: '15551234567@s.whatsapp.net' } as
+      { id: string; jid?: string } | undefined,
   };
 }
 type FakeSocket = ReturnType<typeof createFakeSocket>;
@@ -352,5 +362,99 @@ describe('WhatsAppConnectionManager', () => {
       ['group@g.us', 'alice@s.whatsapp.net'],
       ['group@g.us', 'bob@s.whatsapp.net'],
     ]);
+  });
+
+  describe('sendMediaMessage / getOwnJid (Owner Media Console)', () => {
+    it('getOwnJid returns undefined before connecting, then the connected account own JID', async () => {
+      expect(manager.getOwnJid()).toBeUndefined();
+      await manager.start();
+      sockets[0]!.emit('connection.update', { connection: 'open' });
+      expect(manager.getOwnJid()).toBe('15551234567@s.whatsapp.net');
+    });
+
+    it('sendMediaMessage throws when not connected', async () => {
+      await expect(
+        manager.sendMediaMessage('a@g.us', {
+          type: 'image',
+          buffer: Buffer.from('x'),
+          mimetype: 'image/png',
+        }),
+      ).rejects.toThrow('not currently connected');
+    });
+
+    it('sends an image with a caption and viewOnce, returning the WhatsApp message id', async () => {
+      await manager.start();
+      sockets[0]!.emit('connection.update', { connection: 'open' });
+
+      const result = await manager.sendMediaMessage('a@g.us', {
+        type: 'image',
+        buffer: Buffer.from('fake-image-bytes'),
+        mimetype: 'image/png',
+        caption: 'Hello',
+        viewOnce: true,
+      });
+
+      expect(result).toEqual({ id: 'WAMID-SENT-1' });
+      expect(sockets[0]!.sendMessage).toHaveBeenCalledWith('a@g.us', {
+        image: Buffer.from('fake-image-bytes'),
+        mimetype: 'image/png',
+        caption: 'Hello',
+        viewOnce: true,
+      });
+    });
+
+    it('sends a voice note (audio with ptt) without a caption field, since WhatsApp audio has none', async () => {
+      await manager.start();
+      sockets[0]!.emit('connection.update', { connection: 'open' });
+
+      await manager.sendMediaMessage('a@s.whatsapp.net', {
+        type: 'audio',
+        buffer: Buffer.from('fake-audio-bytes'),
+        mimetype: 'audio/ogg',
+        ptt: true,
+        viewOnce: true,
+      });
+
+      expect(sockets[0]!.sendMessage).toHaveBeenCalledWith('a@s.whatsapp.net', {
+        audio: Buffer.from('fake-audio-bytes'),
+        mimetype: 'audio/ogg',
+        ptt: true,
+        viewOnce: true,
+      });
+    });
+
+    it('sends a document with a filename and caption, never a viewOnce flag', async () => {
+      await manager.start();
+      sockets[0]!.emit('connection.update', { connection: 'open' });
+
+      await manager.sendMediaMessage('a@s.whatsapp.net', {
+        type: 'document',
+        buffer: Buffer.from('fake-doc-bytes'),
+        mimetype: 'application/pdf',
+        fileName: 'invoice.pdf',
+        caption: 'Here you go',
+      });
+
+      expect(sockets[0]!.sendMessage).toHaveBeenCalledWith('a@s.whatsapp.net', {
+        document: Buffer.from('fake-doc-bytes'),
+        mimetype: 'application/pdf',
+        fileName: 'invoice.pdf',
+        caption: 'Here you go',
+      });
+    });
+
+    it('throws if Baileys accepts the send but returns no message id', async () => {
+      await manager.start();
+      sockets[0]!.emit('connection.update', { connection: 'open' });
+      sockets[0]!.sendMessage.mockResolvedValueOnce(undefined);
+
+      await expect(
+        manager.sendMediaMessage('a@g.us', {
+          type: 'image',
+          buffer: Buffer.from('x'),
+          mimetype: 'image/png',
+        }),
+      ).rejects.toThrow('no message id');
+    });
   });
 });

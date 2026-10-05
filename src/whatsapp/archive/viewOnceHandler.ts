@@ -8,7 +8,6 @@ import type { Logger } from 'pino';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AuditRepository } from '../../db/auditRepository';
 import type { MediaArchiveRepository } from '../../db/mediaArchiveRepository';
-import type { WhatsAppGroup, GroupSettings } from '../../db/groupsRepository';
 
 const VIEW_ONCE_KEYS = new Set([
   'viewOnceMessage',
@@ -58,47 +57,66 @@ export interface ViewOnceHandlerDeps {
   logger: Logger;
 }
 
+/** Exactly one of groupId/contactId is set. */
+export interface ViewOnceScope {
+  groupId: string | undefined;
+  contactId: string | undefined;
+}
+
+export interface ViewOnceOptions {
+  /**
+   * Whether to archive at all. For incoming group messages this is
+   * `view_once_handling_enabled && monitoring_enabled` (a genuinely
+   * privacy-sensitive capability, opt-in per group — see
+   * docs/SECURITY.md and docs/DECISIONS.md ADR-001); for incoming private
+   * messages, `media_archive_enabled && private_monitoring_enabled`
+   * (contacts have no separate view-once toggle — see
+   * supabase/migrations). For the bot's OWN sent view-once media
+   * (src/whatsapp/events/eventPipeline.ts's `handleSelfSentMessage`),
+   * always `true` — the owner's own content is never subject to a
+   * third-party-privacy opt-in gate.
+   */
+  enabled: boolean;
+  maxFileSizeBytes: number;
+}
+
 /**
- * Archives eligible incoming view-once media BEFORE it disappears, when
- * explicitly opted in (`view_once_handling_enabled` — a genuinely
- * privacy-sensitive capability, opt-in per group, never default-on — see
- * docs/SECURITY.md and docs/DECISIONS.md ADR-001). Also requires
- * `monitoring_enabled`, consistent with every other archival feature in
- * this project (monitoring is what turns on durable storage at all for a
- * group). Enforces `media_max_file_size_bytes` BEFORE downloading
- * whenever Baileys reports a declared size, and again on the actual
- * downloaded buffer — a file is never partially fetched past the limit,
- * and an unexpectedly large actual download is discarded rather than
- * uploaded. Best-effort: any failure here is logged and swallowed, never
- * allowed to break the rest of the event pipeline.
+ * Archives eligible view-once media (incoming, opt-in per the caller's
+ * `options.enabled`; or self-sent, always archived) BEFORE it disappears.
+ * Enforces `maxFileSizeBytes` BEFORE downloading whenever Baileys reports
+ * a declared size, and again on the actual downloaded buffer — a file is
+ * never partially fetched past the limit, and an unexpectedly large actual
+ * download is discarded rather than uploaded. Best-effort: any failure
+ * here is logged and swallowed, never allowed to break the rest of the
+ * event pipeline.
  */
 export async function handleViewOnceMessage(
   waMessage: WAMessage,
   whatsappMessageId: string,
   senderJid: string,
-  group: WhatsAppGroup,
-  settings: GroupSettings,
+  scope: ViewOnceScope,
+  options: ViewOnceOptions,
   deps: ViewOnceHandlerDeps,
 ): Promise<void> {
-  if (!settings.viewOnceHandlingEnabled || !settings.monitoringEnabled) return;
+  if (!options.enabled) return;
 
   const info = getViewOnceMediaInfo(waMessage);
   if (!info) return;
 
   if (!SUPPORTED_INNER_TYPES.has(info.innerType)) {
     deps.logger.info(
-      { groupId: group.id, innerType: info.innerType },
+      { ...scope, innerType: info.innerType },
       'Unsupported view-once media type — skipping archive',
     );
     return;
   }
 
-  if (info.fileLengthBytes !== undefined && info.fileLengthBytes > settings.mediaMaxFileSizeBytes) {
+  if (info.fileLengthBytes !== undefined && info.fileLengthBytes > options.maxFileSizeBytes) {
     deps.logger.info(
       {
-        groupId: group.id,
+        ...scope,
         declaredBytes: info.fileLengthBytes,
-        limit: settings.mediaMaxFileSizeBytes,
+        limit: options.maxFileSizeBytes,
       },
       'View-once media exceeds the configured size limit — skipped before download',
     );
@@ -109,35 +127,33 @@ export async function handleViewOnceMessage(
   try {
     buffer = await downloadMediaMessage(waMessage, 'buffer', {});
   } catch (err) {
-    deps.logger.warn({ err, groupId: group.id }, 'Failed to download view-once media');
+    deps.logger.warn({ err, ...scope }, 'Failed to download view-once media');
     return;
   }
 
-  if (buffer.length > settings.mediaMaxFileSizeBytes) {
+  if (buffer.length > options.maxFileSizeBytes) {
     deps.logger.warn(
-      { groupId: group.id, actualBytes: buffer.length, limit: settings.mediaMaxFileSizeBytes },
+      { ...scope, actualBytes: buffer.length, limit: options.maxFileSizeBytes },
       'Downloaded view-once media exceeded the configured size limit — discarded, not uploaded',
     );
     return;
   }
 
-  const storagePath = `${deps.accountId}/${group.id}/${whatsappMessageId}`;
+  const scopeSegment = scope.groupId ? `group-${scope.groupId}` : `contact-${scope.contactId}`;
+  const storagePath = `${deps.accountId}/${scopeSegment}/${whatsappMessageId}`;
   const { error: uploadError } = await deps.supabase.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, buffer, { contentType: info.mimeType, upsert: false });
   if (uploadError) {
-    deps.logger.warn(
-      { err: uploadError, groupId: group.id },
-      'Failed to upload archived view-once media',
-    );
+    deps.logger.warn({ err: uploadError, ...scope }, 'Failed to upload archived view-once media');
     return;
   }
 
   const sha256 = createHash('sha256').update(buffer).digest('hex');
   await deps.mediaArchiveRepository.record({
     accountId: deps.accountId,
-    groupId: group.id,
-    contactId: undefined,
+    groupId: scope.groupId,
+    contactId: scope.contactId,
     whatsappMessageId,
     senderJid,
     isViewOnce: true,
@@ -149,7 +165,8 @@ export async function handleViewOnceMessage(
 
   await deps.auditRepository.recordEvent({
     accountId: deps.accountId,
-    groupId: group.id,
+    groupId: scope.groupId,
+    contactId: scope.contactId,
     eventType: 'media.view_once_archived',
     detail: { whatsappMessageId, mimeType: info.mimeType, fileSizeBytes: buffer.length },
   });

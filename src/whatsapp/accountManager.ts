@@ -28,7 +28,11 @@ import { FileAuthStateProvider } from './auth/fileAuthStateProvider';
 import { SupabaseAuthStateProvider } from './auth/supabaseAuthStateProvider';
 import { resolveAuthStorageMode, type AuthStorageMode } from './authStorageMode';
 import { handleCallEvent } from './calls/callHandler';
-import { WhatsAppConnectionManager, type ConnectionManagerOptions } from './connectionManager';
+import {
+  WhatsAppConnectionManager,
+  type ConnectionManagerOptions,
+  type OutboundMediaContent,
+} from './connectionManager';
 import { EventPipeline } from './events/eventPipeline';
 import { handleDiscoveredGroups } from './groups/groupDiscovery';
 import type { PairingListener, PairingSnapshot, WhatsAppStatus } from './types';
@@ -242,6 +246,24 @@ export class AccountManager {
       throw new Error(`Unknown WhatsApp account: ${accountId}`);
     }
     await account.manager.sendTextMessage(jid, text);
+  }
+
+  /** Sends a media message from the given account — the Owner Media Console's only path (src/web/mediaConsoleRoutes.ts). Throws if the account doesn't exist or isn't connected. */
+  async sendMediaMessage(
+    accountId: string,
+    jid: string,
+    content: OutboundMediaContent,
+  ): Promise<{ id: string }> {
+    const account = this.accounts.get(accountId);
+    if (!account) {
+      throw new Error(`Unknown WhatsApp account: ${accountId}`);
+    }
+    return account.manager.sendMediaMessage(jid, content);
+  }
+
+  /** The given account's own WhatsApp JID (for "send to myself"), or `undefined` if unknown/not connected. */
+  getOwnJid(accountId: string): string | undefined {
+    return this.accounts.get(accountId)?.manager.getOwnJid();
   }
 
   /**

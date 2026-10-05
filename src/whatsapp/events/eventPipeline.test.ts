@@ -20,6 +20,15 @@ import { DeterministicResponseClassifier } from '../../rules/classifiers/respons
 import { RuleEngine } from '../../rules/ruleEngine';
 import { EventPipeline } from './eventPipeline';
 
+const { downloadMediaMessageMock } = vi.hoisted(() => ({
+  downloadMediaMessageMock: vi.fn<(...args: unknown[]) => Promise<Buffer>>(),
+}));
+
+vi.mock('@whiskeysockets/baileys', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@whiskeysockets/baileys')>();
+  return { ...actual, downloadMediaMessage: downloadMediaMessageMock };
+});
+
 const testLogger = pino({ level: 'silent' });
 const ACCOUNT_ID = 'acct-1';
 
@@ -54,6 +63,14 @@ function setup() {
     fake as unknown as SupabaseClient,
   );
   const mediaArchiveRepository = new MediaArchiveRepository(fake as unknown as SupabaseClient);
+  // FakeSupabaseClient only simulates `.from(table)` (Postgres), never
+  // Supabase Storage — attach a minimal working `.storage` so the
+  // view-once/general-media archive handlers' `.storage.from(bucket).upload()`
+  // call succeeds in tests that actually exercise media (most tests here
+  // never touch media and never notice this exists).
+  const storageUploadMock = vi.fn(async () => ({ error: null as { message: string } | null }));
+  const storageFromMock = vi.fn(() => ({ upload: storageUploadMock }));
+  (fake as unknown as { storage: unknown }).storage = { from: storageFromMock };
   const ownerInbox = new OwnerInboxRepository(fake as unknown as SupabaseClient);
   const pendingApprovals = new PendingApprovalsRepository(fake as unknown as SupabaseClient);
   const ruleEngine = new RuleEngine({
@@ -153,6 +170,8 @@ function setup() {
     auditRepository,
     accountSettingsRepository,
     ownerInbox,
+    mediaArchiveRepository,
+    storageUploadMock,
     pipeline,
     sender,
   };
@@ -627,5 +646,189 @@ describe('EventPipeline — handleParticipantJoined ("Welcome Message" template)
     await pipeline.handleParticipantJoined('group@g.us', 'alice@s.whatsapp.net');
 
     expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('EventPipeline — self-sent (fromMe) messages: stored/archived, never a trigger', () => {
+  it('stores a self-sent group text message even with monitoring OFF (own content is always recoverable)', async () => {
+    const { pipeline, groupsRepository, fake } = setup();
+    await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+
+    await pipeline.handleMessage(
+      waGroupMessage({ key: { remoteJid: 'group@g.us', fromMe: true, id: 'OUT1' } }),
+      'notify',
+    );
+
+    const rows = fake.rawRows('whatsapp_messages') as Array<{ from_me: boolean }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.from_me).toBe(true);
+  });
+
+  it('never evaluates rules or runs commands for a self-sent group message', async () => {
+    const { pipeline, groupsRepository, rulesRepository, sender } = setup();
+    const group = await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    await groupsRepository.updateSettings(group.id, { botEnabled: true });
+    await rulesRepository.create({
+      groupId: group.id,
+      name: 'Rule',
+      triggerType: 'response_threshold',
+      config: {
+        targetMessageMatch: 'quoted',
+        qualify: { mode: 'contains', phrases: ['congrats'] },
+        threshold: 1,
+        action: { type: 'SEND_MESSAGE', message: 'Thanks!' },
+        cooldownSeconds: 0,
+      },
+    });
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        key: { remoteJid: 'group@g.us', fromMe: true, id: 'OUT2' },
+        message: {
+          extendedTextMessage: { text: 'congrats', contextInfo: { stanzaId: 'ANNOUNCEMENT' } },
+        },
+      }),
+      'notify',
+    );
+
+    expect(sender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('archives a self-sent group image regardless of mediaArchiveEnabled (own content is always recoverable)', async () => {
+    downloadMediaMessageMock.mockResolvedValueOnce(Buffer.from('fake-image-bytes'));
+    const { pipeline, groupsRepository, mediaArchiveRepository } = setup();
+    await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        key: { remoteJid: 'group@g.us', fromMe: true, id: 'OUT3' },
+        message: { imageMessage: { mimetype: 'image/jpeg', fileLength: 100 } },
+      }),
+      'notify',
+    );
+
+    const archived = await mediaArchiveRepository.findByMessageId(ACCOUNT_ID, 'OUT3');
+    expect(archived).toMatchObject({ mimeType: 'image/jpeg', isViewOnce: false });
+  });
+
+  it('archives a self-sent group view-once image regardless of viewOnceHandlingEnabled', async () => {
+    downloadMediaMessageMock.mockResolvedValueOnce(Buffer.from('fake-view-once-bytes'));
+    const { pipeline, groupsRepository, mediaArchiveRepository } = setup();
+    await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+
+    await pipeline.handleMessage(
+      waGroupMessage({
+        key: { remoteJid: 'group@g.us', fromMe: true, id: 'OUT4' },
+        message: {
+          viewOnceMessage: { message: { imageMessage: { mimetype: 'image/png', fileLength: 50 } } },
+        },
+      }),
+      'notify',
+    );
+
+    const archived = await mediaArchiveRepository.findByMessageId(ACCOUNT_ID, 'OUT4');
+    expect(archived).toMatchObject({ mimeType: 'image/png', isViewOnce: true });
+  });
+
+  it('stores a self-sent private message and discovers the contact if new (e.g. "Message Yourself")', async () => {
+    const { pipeline, fake } = setup();
+
+    await pipeline.handleMessage(
+      waPrivateMessage({ key: { remoteJid: 'self@s.whatsapp.net', fromMe: true, id: 'OUT5' } }),
+      'notify',
+    );
+
+    const rows = fake.rawRows('whatsapp_messages') as Array<{ from_me: boolean }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.from_me).toBe(true);
+    expect(fake.rawRows('whatsapp_contacts')).toHaveLength(1);
+  });
+
+  it('a self-sent "delete for everyone" IS still processed (self-sent deletion fix) — the revoke branch runs before the fromMe short-circuit', async () => {
+    const { pipeline, groupsRepository, fake } = setup();
+    await groupsRepository.upsertDiscoveredGroup(ACCOUNT_ID, 'group@g.us', 'Team');
+    // First, the original self-sent message arrives and is stored (via the
+    // new handleSelfSentMessage path tested above).
+    await pipeline.handleMessage(
+      waGroupMessage({ key: { remoteJid: 'group@g.us', fromMe: true, id: 'OUT6' } }),
+      'notify',
+    );
+
+    const { proto } = await import('@whiskeysockets/baileys');
+    await pipeline.handleMessage(
+      {
+        key: { remoteJid: 'group@g.us', fromMe: true, id: 'REVOKE-OUT6' },
+        message: {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.REVOKE,
+            key: { remoteJid: 'group@g.us', fromMe: true, id: 'OUT6' },
+          },
+        },
+      } as WAMessage,
+      'notify',
+    );
+
+    const rows = fake.rawRows('whatsapp_messages') as Array<{
+      deleted: boolean;
+      whatsapp_message_id: string;
+    }>;
+    const revoked = rows.find((r) => r.whatsapp_message_id === 'OUT6');
+    expect(revoked?.deleted).toBe(true);
+  });
+});
+
+describe('EventPipeline — private incoming view-once (fixes the pre-existing gap: contacts never archived view-once at all)', () => {
+  it('archives an incoming private view-once image when mediaArchiveEnabled + privateMonitoringEnabled are both on', async () => {
+    downloadMediaMessageMock.mockResolvedValueOnce(Buffer.from('fake-view-once-bytes'));
+    const { pipeline, contactsRepository, mediaArchiveRepository } = setup();
+    const contact = await contactsRepository.upsertDiscoveredContact(
+      ACCOUNT_ID,
+      'contact@s.whatsapp.net',
+      undefined,
+    );
+    await contactsRepository.updateSettings(contact.id, {
+      privateMonitoringEnabled: true,
+      mediaArchiveEnabled: true,
+    });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({
+        key: { remoteJid: 'contact@s.whatsapp.net', fromMe: false, id: 'IN1' },
+        message: {
+          viewOnceMessage: {
+            message: { imageMessage: { mimetype: 'image/jpeg', fileLength: 80 } },
+          },
+        },
+      }),
+      'notify',
+    );
+
+    const archived = await mediaArchiveRepository.findByMessageId(ACCOUNT_ID, 'IN1');
+    expect(archived).toMatchObject({ contactId: contact.id, isViewOnce: true });
+  });
+
+  it('does not archive an incoming private view-once image when mediaArchiveEnabled is off', async () => {
+    const { pipeline, contactsRepository, mediaArchiveRepository } = setup();
+    const contact = await contactsRepository.upsertDiscoveredContact(
+      ACCOUNT_ID,
+      'contact@s.whatsapp.net',
+      undefined,
+    );
+    await contactsRepository.updateSettings(contact.id, { privateMonitoringEnabled: true });
+
+    await pipeline.handleMessage(
+      waPrivateMessage({
+        key: { remoteJid: 'contact@s.whatsapp.net', fromMe: false, id: 'IN2' },
+        message: {
+          viewOnceMessage: {
+            message: { imageMessage: { mimetype: 'image/jpeg', fileLength: 80 } },
+          },
+        },
+      }),
+      'notify',
+    );
+
+    expect(downloadMediaMessageMock).not.toHaveBeenCalled();
+    expect(await mediaArchiveRepository.findByMessageId(ACCOUNT_ID, 'IN2')).toBeUndefined();
   });
 });

@@ -87,15 +87,18 @@ export class EventPipeline {
     // responses. Only 'notify' (genuinely live) messages proceed further.
     if (type !== 'notify') return;
 
-    // Never treat the bot's own outgoing message as an incoming trigger.
-    if (event.fromMe) return;
-
     // WhatsApp's "delete for everyone" signal — a protocolMessage carrying
     // the original message's key, legitimately delivered through the same
     // messages.upsert path as any other message (see
-    // src/whatsapp/archive/deletedMessageHandler.ts). Never a normal
-    // message in its own right — handled and done, nothing else to store
-    // or evaluate for it.
+    // src/whatsapp/archive/deletedMessageHandler.ts). Checked BEFORE the
+    // `fromMe` branch below: when the owner deletes their OWN sent message
+    // "for everyone" (including a message sent from the Owner Media
+    // Console — src/web/mediaConsoleRoutes.ts), Baileys delivers that
+    // revoke with `fromMe: true` too, and it must still be processed —
+    // otherwise self-sent deletions would silently never be archived. See
+    // docs/DECISIONS.md on why self-sent content is never excluded here.
+    // Never a normal message in its own right — handled and done, nothing
+    // else to store or evaluate for it.
     const revokedKey = extractRevokedKey(waMessage);
     if (revokedKey) {
       if (event.context === 'group' && event.groupJid) {
@@ -113,6 +116,19 @@ export class EventPipeline {
           this.deps.logger.error({ err }, 'Failed to process private deleted-message event'),
         );
       }
+      return;
+    }
+
+    // Our own outgoing message (sent from this phone, another linked
+    // device, an automated rule, or the Owner Media Console) — Baileys
+    // echoes every sent message back through this same `messages.upsert`
+    // path with `fromMe: true`. Still stored and media-archived exactly
+    // like an incoming message (so it can later be found and shown if the
+    // owner deletes it "for everyone" — see the revoke branch above), but
+    // never treated as an incoming trigger: no commands, no rule
+    // evaluation, no "message.received" audit noise for our own sends.
+    if (event.fromMe) {
+      await this.handleSelfSentMessage(event, waMessage);
       return;
     }
 
@@ -147,8 +163,11 @@ export class EventPipeline {
         waMessage,
         event.whatsappMessageId,
         event.senderJid,
-        group,
-        settings,
+        { groupId: group.id, contactId: undefined },
+        {
+          enabled: settings.viewOnceHandlingEnabled && settings.monitoringEnabled,
+          maxFileSizeBytes: settings.mediaMaxFileSizeBytes,
+        },
         {
           accountId: this.deps.accountId,
           ...this.deps.viewOnceHandlerDeps,
@@ -297,6 +316,26 @@ export class EventPipeline {
       await this.deps.messagesRepository.store(event, { contactId: contact.id });
     }
 
+    // View-once media — DM-side equivalent of the group branch above.
+    // Contacts have no separate view-once toggle (unlike groups'
+    // `view_once_handling_enabled`); `mediaArchiveEnabled` covers both
+    // general and view-once content for a private chat.
+    if (isViewOnceMessageType(event.messageType)) {
+      await handleViewOnceMessage(
+        waMessage,
+        event.whatsappMessageId,
+        event.senderJid,
+        { groupId: undefined, contactId: contact.id },
+        {
+          enabled: settings.mediaArchiveEnabled && settings.privateMonitoringEnabled,
+          maxFileSizeBytes: DEFAULT_PRIVATE_MEDIA_MAX_FILE_SIZE_BYTES,
+        },
+        { accountId: this.deps.accountId, ...this.deps.viewOnceHandlerDeps },
+      ).catch((err: unknown) =>
+        this.deps.logger.error({ err }, 'Failed to process view-once media'),
+      );
+    }
+
     // General (non-view-once) media archive — DM-side equivalent of the
     // group branch above. Private chats have no configurable size-limit
     // field, so this uses the same fixed default every group starts with.
@@ -364,5 +403,76 @@ export class EventPipeline {
     }
 
     await this.deps.ruleEngine.evaluatePrivate(event, contact.id, settings);
+  }
+
+  /**
+   * Our own outgoing message, echoed back by Baileys with `fromMe: true`
+   * (see `handleMessage()` above for why this is reached before any
+   * command/rule-evaluation logic). Always stored and media/view-once
+   * archived — unlike the incoming branches, this is NEVER gated behind
+   * `monitoringEnabled`/`mediaArchiveEnabled`/`viewOnceHandlingEnabled`:
+   * those toggles exist to make surveilling OTHER people's messages
+   * opt-in; they have no bearing on the owner's own sent content, which
+   * must always be recoverable if later deleted "for everyone" (see the
+   * revoke branch in `handleMessage()`, and docs/DECISIONS.md). This is
+   * also what makes a manual send from the Owner Media Console
+   * (src/web/mediaConsoleRoutes.ts) end up viewable/deletable through the
+   * exact same archive used for everything else — no separate code path.
+   */
+  private async handleSelfSentMessage(
+    event: NormalizedMessageEvent,
+    waMessage: WAMessage,
+  ): Promise<void> {
+    let groupId: string | undefined;
+    let contactId: string | undefined;
+
+    if (event.context === 'group' && event.groupJid) {
+      const group = await this.deps.groupsRepository.getByJid(this.deps.accountId, event.groupJid);
+      groupId = group?.id;
+    } else {
+      contactId = (
+        await this.deps.contactsRepository.upsertDiscoveredContact(
+          this.deps.accountId,
+          event.chatJid,
+          undefined,
+        )
+      ).id;
+    }
+    if (!groupId && !contactId) return;
+
+    const scope = { groupId, contactId };
+    const maxFileSizeBytes = groupId
+      ? (await this.deps.groupsRepository.ensureSettings(groupId)).mediaMaxFileSizeBytes
+      : DEFAULT_PRIVATE_MEDIA_MAX_FILE_SIZE_BYTES;
+
+    await this.deps.messagesRepository.store(
+      event,
+      groupId ? { groupId } : { contactId: contactId! },
+    );
+
+    if (isViewOnceMessageType(event.messageType)) {
+      await handleViewOnceMessage(
+        waMessage,
+        event.whatsappMessageId,
+        event.senderJid,
+        scope,
+        { enabled: true, maxFileSizeBytes },
+        { accountId: this.deps.accountId, ...this.deps.viewOnceHandlerDeps },
+      ).catch((err: unknown) =>
+        this.deps.logger.error({ err }, 'Failed to process self-sent view-once media'),
+      );
+    } else if (isGeneralMediaMessageType(event.messageType)) {
+      await handleGeneralMediaMessage(
+        waMessage,
+        event.whatsappMessageId,
+        event.senderJid,
+        event.messageType,
+        scope,
+        maxFileSizeBytes,
+        { accountId: this.deps.accountId, ...this.deps.mediaArchiveHandlerDeps },
+      ).catch((err: unknown) =>
+        this.deps.logger.error({ err }, 'Failed to process self-sent media archive'),
+      );
+    }
   }
 }

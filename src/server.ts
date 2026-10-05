@@ -18,6 +18,7 @@ import { createContactRouter } from './web/contactRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
 import { createGroupRouter } from './web/groupRoutes';
 import { createInboxRouter } from './web/inboxRoutes';
+import { createMediaConsoleRouter } from './web/mediaConsoleRoutes';
 import { createPresetRouter } from './web/presetRoutes';
 import type { WhatsAppStatus } from './whatsapp/types';
 
@@ -46,7 +47,14 @@ export function createServer({
     app.set('trust proxy', 1);
   }
 
-  app.use(express.json());
+  // Raised from Express's 100kb default to accommodate the Owner Media
+  // Console's base64-encoded file uploads (src/web/mediaConsoleRoutes.ts) —
+  // base64 adds ~33% overhead over the raw file, and MAX_FILE_SIZE_BYTES
+  // there enforces the real per-file cap on the decoded buffer. Every
+  // route that accepts a body still requires an authenticated owner
+  // session (and CSRF for anything state-changing), so this is not an
+  // unauthenticated-upload risk.
+  app.use(express.json({ limit: '40mb' }));
   app.use(cookieParser());
 
   // Liveness: is the Node process itself up? Always 200 while the server is
@@ -104,6 +112,11 @@ export function createServer({
 
   // Authenticated Backup/Export — safe configuration only, never credentials.
   app.use('/api/backup', createBackupRouter());
+
+  // Authenticated Owner Media Console — manual compose/send (text, image,
+  // video, audio, voice note, document, view-once where supported) to a
+  // contact, a group, or the owner's own WhatsApp number.
+  app.use('/api/media-console', createMediaConsoleRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WhatsApp Bot — Groups</title>
+    <title>WhatsApp Bot — Message Vault</title>
     <meta name="csrf-token" content="__CSRF_TOKEN__" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -15,7 +15,7 @@
       </div>
       <nav class="nav-links">
         <a class="nav-link" href="/">Accounts</a>
-        <a class="nav-link active" href="/groups">Groups</a>
+        <a class="nav-link" href="/groups">Groups</a>
         <a class="nav-link" href="/presets">Presets</a>
         <a class="nav-link" href="/contacts">Contacts</a>
         <a class="nav-link" href="/inbox">Inbox</a>
@@ -24,7 +24,7 @@
         <a class="nav-link" href="/analytics">Analytics</a>
         <a class="nav-link" href="/backup">Backup</a>
         <a class="nav-link" href="/media-console">Media Console</a>
-        <a class="nav-link" href="/message-vault">Vault</a>
+        <a class="nav-link active" href="/message-vault">Vault</a>
         <a class="nav-link" href="/admins">Admins</a>
         <a class="nav-link" href="/health">Health</a>
         <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
@@ -34,27 +34,23 @@
     <main class="app-main">
       <section>
         <div class="section-head">
-          <h2>WhatsApp Groups</h2>
+          <h2>Message Vault</h2>
         </div>
         <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
-          Groups your connected WhatsApp accounts belong to. Every group starts with the bot OFF —
-          click a group to configure it.
+          Every message YOU sent manually from the <a href="/media-console">Owner Media Console</a>
+          — distinct from anything the bot sent on its own (see Activity for that). If you later
+          delete a sent item "for everyone," it still shows up (and stays viewable) in
+          <a href="/activity">Deleted Messages</a>, the same as anyone else's deleted content.
         </p>
-        <div id="groups-error" class="error-text"></div>
-        <div id="group-list" class="group-list"></div>
-        <div id="empty-state" class="empty-state hidden">
-          <p>No groups discovered yet.</p>
-          <p class="muted">
-            Groups appear here automatically once a connected WhatsApp account is a member of one.
-          </p>
-        </div>
+        <div id="vault-error" class="error-text"></div>
         <div id="unconfigured-state" class="empty-state hidden">
-          <p>Groups require Supabase to be configured.</p>
-          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+          <p>The Message Vault requires Supabase to be configured.</p>
         </div>
+        <div id="vault-list"></div>
+        <p id="vault-empty" class="muted hidden">No manual sends yet.</p>
       </section>
     </main>
 
-    <script src="/groups.js"></script>
+    <script src="/message-vault.js"></script>
   </body>
 </html>

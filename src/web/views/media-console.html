@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Media Console</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link" href="/presets">Presets</a>
+        <a class="nav-link" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/inbox">Inbox</a>
+        <a class="nav-link" href="/approvals">Approvals</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <a class="nav-link" href="/analytics">Analytics</a>
+        <a class="nav-link" href="/backup">Backup</a>
+        <a class="nav-link active" href="/media-console">Media Console</a>
+        <a class="nav-link" href="/message-vault">Vault</a>
+        <a class="nav-link" href="/admins">Admins</a>
+        <a class="nav-link" href="/health">Health</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>Owner Media Console</h2>
+        </div>
+        <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
+          Manually send a message as yourself — not an automated reply. Every send here is logged
+          separately from anything the bot does on its own (see the
+          <a href="/message-vault">Message Vault</a>). Sending here is never blocked by Emergency
+          Pause, since it's an explicit action you're taking, not automation.
+        </p>
+        <div id="console-error" class="error-text"></div>
+        <div id="unconfigured-state" class="empty-state hidden">
+          <p>The Owner Media Console requires Supabase to be configured.</p>
+          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+        </div>
+
+        <div id="console-content" class="card" style="padding: 18px; max-width: 560px">
+          <div class="field">
+            <label class="field-label" for="account-select">Send from account</label>
+            <select id="account-select"></select>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="destination-select">Send to</label>
+            <select id="destination-select">
+              <option value="self">Myself (Message Yourself)</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="type-select">Message type</label>
+            <select id="type-select">
+              <option value="text">Text</option>
+              <option value="image">Image</option>
+              <option value="video">Video</option>
+              <option value="audio">Audio</option>
+              <option value="voice_note">Voice note</option>
+              <option value="document">Document / file</option>
+            </select>
+          </div>
+
+          <div class="field" id="text-field">
+            <label class="field-label" for="text-input">Message</label>
+            <textarea id="text-input" rows="4" placeholder="Type a message..."></textarea>
+          </div>
+
+          <div class="field hidden" id="file-field">
+            <label class="field-label" for="file-input">File</label>
+            <input type="file" id="file-input" />
+            <div id="file-preview" style="margin-top: 8px"></div>
+          </div>
+
+          <div class="field hidden" id="caption-field">
+            <label class="field-label" for="caption-input">Caption (optional)</label>
+            <input type="text" id="caption-input" maxlength="1024" />
+          </div>
+
+          <div class="field hidden" id="view-once-field">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px">
+              <input type="checkbox" id="view-once-checkbox" />
+              Send as View Once (disappears after it's opened)
+            </label>
+          </div>
+
+          <button class="btn btn-primary btn-sm" id="send-btn">Send</button>
+          <span id="send-status" class="muted" style="margin-left: 10px; font-size: 13px"></span>
+        </div>
+      </section>
+    </main>
+
+    <script src="/media-console.js"></script>
+  </body>
+</html>

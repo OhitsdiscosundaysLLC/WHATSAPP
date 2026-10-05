@@ -39,7 +39,21 @@ describe('extractRevokedKey', () => {
       remoteJid: 'group@g.us',
       id: 'ORIGINAL_MSG',
       participant: 'alice@s.whatsapp.net',
+      fromMe: false,
     });
+  });
+
+  it('extracts fromMe: true when the ORIGINAL (now-revoked) message was self-sent', () => {
+    const key = extractRevokedKey({
+      key: { remoteJid: 'group@g.us', fromMe: true, id: 'REVOKE2' },
+      message: {
+        protocolMessage: {
+          type: proto.Message.ProtocolMessage.Type.REVOKE,
+          key: { remoteJid: 'group@g.us', id: 'OUT1', fromMe: true },
+        },
+      },
+    } as unknown as WAMessage);
+    expect(key).toMatchObject({ fromMe: true });
   });
 
   it('returns undefined for a normal message', () => {
@@ -102,7 +116,7 @@ describe('handleDeletedMessage', () => {
   it('does nothing when deletedMessageArchiveEnabled is false (safe default)', async () => {
     const { deps, auditRepository } = await setup();
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -132,7 +146,7 @@ describe('handleDeletedMessage', () => {
     );
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -147,7 +161,12 @@ describe('handleDeletedMessage', () => {
     await groupsRepository.updateSettings(group.id, { deletedMessageArchiveEnabled: true });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'NEVER_STORED', participant: 'alice@s.whatsapp.net' },
+      {
+        remoteJid: 'group@g.us',
+        id: 'NEVER_STORED',
+        participant: 'alice@s.whatsapp.net',
+        fromMe: false,
+      },
       'group@g.us',
       deps,
     );
@@ -162,7 +181,7 @@ describe('handleDeletedMessage', () => {
     await groupsRepository.updateSettings(group.id, { deletedMessageArchiveEnabled: true });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -179,7 +198,7 @@ describe('handleDeletedMessage', () => {
     // deletedMessageAlertMode defaults to 'archive_only' — never explicitly set here.
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -196,7 +215,7 @@ describe('handleDeletedMessage', () => {
     });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -213,7 +232,7 @@ describe('handleDeletedMessage', () => {
     });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -230,12 +249,12 @@ describe('handleDeletedMessage', () => {
     });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG2', participant: 'bob@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG2', participant: 'bob@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -256,7 +275,7 @@ describe('handleDeletedMessage', () => {
     });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -264,7 +283,7 @@ describe('handleDeletedMessage', () => {
 
     // A second deletion in the same group right after — cooldown should suppress a second notification.
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG2', participant: 'bob@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG2', participant: 'bob@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -279,7 +298,7 @@ describe('handleDeletedMessage', () => {
       deletedMessageAlertMode: 'both',
     });
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -290,7 +309,7 @@ describe('handleDeletedMessage', () => {
     const { deps } = await setup();
     await expect(
       handleDeletedMessage(
-        { remoteJid: 'unknown@g.us', id: 'MSG1', participant: undefined },
+        { remoteJid: 'unknown@g.us', id: 'MSG1', participant: undefined, fromMe: false },
         'unknown@g.us',
         deps,
       ),
@@ -342,7 +361,7 @@ describe('handleDeletedMessage', () => {
     });
 
     await handleDeletedMessage(
-      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net' },
+      { remoteJid: 'group@g.us', id: 'MSG1', participant: 'alice@s.whatsapp.net', fromMe: false },
       'group@g.us',
       deps,
     );
@@ -402,7 +421,7 @@ describe('handlePrivateDeletedMessage', () => {
   it('does nothing when privateDeletedMessageArchiveEnabled is false (safe default)', async () => {
     const { deps, auditRepository } = await setupPrivate();
     await handlePrivateDeletedMessage(
-      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined },
+      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined, fromMe: false },
       'alice@s.whatsapp.net',
       deps,
     );
@@ -434,7 +453,7 @@ describe('handlePrivateDeletedMessage', () => {
     );
 
     await handlePrivateDeletedMessage(
-      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined },
+      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined, fromMe: false },
       'alice@s.whatsapp.net',
       deps,
     );
@@ -450,7 +469,7 @@ describe('handlePrivateDeletedMessage', () => {
     });
 
     await handlePrivateDeletedMessage(
-      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined },
+      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined, fromMe: false },
       'alice@s.whatsapp.net',
       deps,
     );
@@ -467,7 +486,7 @@ describe('handlePrivateDeletedMessage', () => {
     });
 
     await handlePrivateDeletedMessage(
-      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined },
+      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined, fromMe: false },
       'alice@s.whatsapp.net',
       deps,
     );
@@ -501,7 +520,7 @@ describe('handlePrivateDeletedMessage', () => {
     });
 
     await handlePrivateDeletedMessage(
-      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined },
+      { remoteJid: 'alice@s.whatsapp.net', id: 'MSG1', participant: undefined, fromMe: false },
       'alice@s.whatsapp.net',
       deps,
     );
@@ -515,7 +534,7 @@ describe('handlePrivateDeletedMessage', () => {
     const { deps } = await setupPrivate();
     await expect(
       handlePrivateDeletedMessage(
-        { remoteJid: 'unknown@s.whatsapp.net', id: 'MSG1', participant: undefined },
+        { remoteJid: 'unknown@s.whatsapp.net', id: 'MSG1', participant: undefined, fromMe: false },
         'unknown@s.whatsapp.net',
         deps,
       ),

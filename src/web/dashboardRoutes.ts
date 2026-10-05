@@ -138,6 +138,22 @@ export function createDashboardRouter(): Router {
     await sendTemplate(res, 'health.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
   });
 
+  router.get('/media-console', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    await sendTemplate(res, 'media-console.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
+  });
+
+  router.get('/message-vault', attachSession, async (req: Request, res: Response) => {
+    if (!req.ownerSession) {
+      res.redirect(302, '/login');
+      return;
+    }
+    await sendTemplate(res, 'message-vault.html', { __CSRF_TOKEN__: req.ownerSession.csrfToken });
+  });
+
   return router;
 }
 

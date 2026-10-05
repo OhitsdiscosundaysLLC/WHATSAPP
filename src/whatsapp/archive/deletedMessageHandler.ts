@@ -13,6 +13,8 @@ export interface RevokedMessageKey {
   remoteJid: string;
   id: string;
   participant: string | undefined;
+  /** Whether the ORIGINAL (now-revoked) message was sent by this account — not who issued the revoke. */
+  fromMe: boolean;
 }
 
 /**
@@ -36,7 +38,12 @@ export function extractRevokedKey(waMessage: WAMessage): RevokedMessageKey | und
   }
   const key = protocolMessage.key;
   if (!key?.id || !key.remoteJid) return undefined;
-  return { remoteJid: key.remoteJid, id: key.id, participant: key.participant ?? undefined };
+  return {
+    remoteJid: key.remoteJid,
+    id: key.id,
+    participant: key.participant ?? undefined,
+    fromMe: Boolean(key.fromMe),
+  };
 }
 
 export interface DeletedMessageHandlerDeps {
@@ -72,7 +79,11 @@ export async function handleDeletedMessage(
   if (!group) return;
 
   const settings = await deps.groupsRepository.ensureSettings(group.id);
-  if (!settings.deletedMessageArchiveEnabled) return;
+  // The opt-in gate protects OTHER people's deletions (a privacy-sensitive
+  // capability); the owner's own self-sent content is always recoverable
+  // regardless — mirrors the unconditional self-sent storage/archival in
+  // src/whatsapp/events/eventPipeline.ts's handleSelfSentMessage().
+  if (!settings.deletedMessageArchiveEnabled && !revokedKey.fromMe) return;
 
   const found = await deps.messagesRepository.markDeleted(
     deps.accountId,
@@ -168,7 +179,8 @@ export async function handlePrivateDeletedMessage(
   if (!contact) return;
 
   const settings = await deps.contactsRepository.ensureSettings(contact.id);
-  if (!settings.privateDeletedMessageArchiveEnabled) return;
+  // Same self-sent exception as handleDeletedMessage() above.
+  if (!settings.privateDeletedMessageArchiveEnabled && !revokedKey.fromMe) return;
 
   const found = await deps.messagesRepository.markDeleted(
     deps.accountId,

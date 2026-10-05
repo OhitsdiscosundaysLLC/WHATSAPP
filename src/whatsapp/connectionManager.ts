@@ -41,6 +41,20 @@ export interface DiscoveredGroup {
   participants?: Array<{ lid: string | undefined; jid: string | undefined }>;
 }
 
+/**
+ * What the Owner Media Console (src/web/mediaConsoleRoutes.ts) can send
+ * beyond plain text. `viewOnce`/`caption`/`ptt`/`fileName` are only
+ * meaningful for the variants that carry them below — mirrors Baileys'
+ * own `AnyMediaMessageContent` union (installed @whiskeysockets/baileys
+ * 6.7.24), not an invented shape. Deliberately excludes `sticker`: not a
+ * manual-compose type WhatsApp's own clients offer either.
+ */
+export type OutboundMediaContent =
+  | { type: 'image'; buffer: Buffer; mimetype: string; caption?: string; viewOnce?: boolean }
+  | { type: 'video'; buffer: Buffer; mimetype: string; caption?: string; viewOnce?: boolean }
+  | { type: 'audio'; buffer: Buffer; mimetype: string; ptt?: boolean; viewOnce?: boolean }
+  | { type: 'document'; buffer: Buffer; mimetype: string; fileName: string; caption?: string };
+
 export interface ConnectionManagerOptions {
   authProvider: AuthStateProvider;
   logger: Logger;
@@ -538,6 +552,78 @@ export class WhatsAppConnectionManager {
       throw new Error('Cannot send a WhatsApp message: this account is not currently connected');
     }
     await this.socket.sendMessage(jid, { text });
+  }
+
+  /**
+   * The connected account's own WhatsApp identity, used to resolve "send to
+   * myself" (WhatsApp's own "Message Yourself" chat — an ordinary private
+   * chat whose JID is the account's own number). `undefined` while not yet
+   * connected. Verified against the installed @whiskeysockets/baileys
+   * 6.7.24 `WASocket.user: Contact | undefined` type — `.jid` is the
+   * phone-number form when Baileys has it, falling back to `.id` (which
+   * may be in `@lid` form).
+   */
+  getOwnJid(): string | undefined {
+    return this.socket?.user?.jid ?? this.socket?.user?.id;
+  }
+
+  /**
+   * Sends a media message (image/video/audio/voice-note/document) through
+   * this account's live connection — the Owner Media Console's only send
+   * path (src/web/mediaConsoleRoutes.ts), itself only reachable via an
+   * authenticated, CSRF-protected dashboard request. Never called from any
+   * automation code path (rule engine, moderation, commands, daily
+   * summary, approvals all exclusively use `sendTextMessage` above) — see
+   * docs/SECURITY.md on why that keeps a manual send structurally
+   * distinguishable from automation. Returns the WhatsApp message id
+   * Baileys assigned, so the caller can later look up the archived copy
+   * (src/db/mediaArchiveRepository.ts) once the event pipeline's `fromMe`
+   * echo-handling archives it (see src/whatsapp/events/eventPipeline.ts).
+   */
+  async sendMediaMessage(jid: string, content: OutboundMediaContent): Promise<{ id: string }> {
+    if (!this.socket || this.state !== 'connected') {
+      throw new Error('Cannot send a WhatsApp message: this account is not currently connected');
+    }
+    let result;
+    switch (content.type) {
+      case 'image':
+        result = await this.socket.sendMessage(jid, {
+          image: content.buffer,
+          mimetype: content.mimetype,
+          ...(content.caption !== undefined ? { caption: content.caption } : {}),
+          viewOnce: content.viewOnce === true,
+        });
+        break;
+      case 'video':
+        result = await this.socket.sendMessage(jid, {
+          video: content.buffer,
+          mimetype: content.mimetype,
+          ...(content.caption !== undefined ? { caption: content.caption } : {}),
+          viewOnce: content.viewOnce === true,
+        });
+        break;
+      case 'audio':
+        result = await this.socket.sendMessage(jid, {
+          audio: content.buffer,
+          mimetype: content.mimetype,
+          ptt: content.ptt === true,
+          viewOnce: content.viewOnce === true,
+        });
+        break;
+      case 'document':
+        result = await this.socket.sendMessage(jid, {
+          document: content.buffer,
+          mimetype: content.mimetype,
+          fileName: content.fileName,
+          ...(content.caption !== undefined ? { caption: content.caption } : {}),
+        });
+        break;
+    }
+    const id = result?.key?.id;
+    if (!id) {
+      throw new Error('WhatsApp accepted the send but returned no message id');
+    }
+    return { id };
   }
 
   /**
