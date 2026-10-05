@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bot — Backup</title>
+    <meta name="csrf-token" content="__CSRF_TOKEN__" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">WhatsApp Automation Bot</span>
+      </div>
+      <nav class="nav-links">
+        <a class="nav-link" href="/">Accounts</a>
+        <a class="nav-link" href="/groups">Groups</a>
+        <a class="nav-link" href="/presets">Presets</a>
+        <a class="nav-link" href="/contacts">Contacts</a>
+        <a class="nav-link" href="/inbox">Inbox</a>
+        <a class="nav-link" href="/approvals">Approvals</a>
+        <a class="nav-link" href="/activity">Activity</a>
+        <a class="nav-link" href="/analytics">Analytics</a>
+        <a class="nav-link active" href="/backup">Backup</a>
+        <a class="nav-link" href="/admins">Admins</a>
+        <a class="nav-link" href="/health">Health</a>
+        <button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+      <section>
+        <div class="section-head">
+          <h2>Backup &amp; Export</h2>
+        </div>
+        <p class="muted" style="margin-top: -8px; margin-bottom: 18px; font-size: 13px">
+          Exports configuration only — account settings, group/contact settings, rules, and presets.
+          Never includes the WhatsApp connection itself, API keys, the encryption key, the dashboard
+          password, or any session secret.
+        </p>
+        <div id="backup-error" class="error-text"></div>
+        <div id="unconfigured-state" class="empty-state hidden">
+          <p>Backup/Export requires Supabase to be configured.</p>
+          <p class="muted">See docs/DEPLOYMENT.md for setup.</p>
+        </div>
+
+        <div id="backup-content">
+          <div class="card" style="padding: 18px; margin-bottom: 20px">
+            <h3 style="margin: 0 0 12px; font-size: 15px">Export</h3>
+            <div class="field">
+              <label class="field-label" for="export-account">Account to export</label>
+              <select id="export-account"></select>
+            </div>
+            <button class="btn btn-primary btn-sm" id="export-btn">Download Backup (.json)</button>
+          </div>
+
+          <div class="card" style="padding: 18px">
+            <h3 style="margin: 0 0 12px; font-size: 15px">Import</h3>
+            <p class="muted" style="font-size: 12px; margin: 0 0 12px">
+              Only applies to groups and contacts the target account has already discovered (a
+              group/contact only in the backup file is skipped, never fabricated). Preview shows
+              exactly what will change before anything is written.
+            </p>
+            <div class="field">
+              <label class="field-label" for="import-account">Target account</label>
+              <select id="import-account"></select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-file">Backup file (.json)</label>
+              <input type="file" id="import-file" accept="application/json,.json" />
+            </div>
+            <div class="rule-actions">
+              <button class="btn btn-sm" id="preview-import-btn">Preview Import</button>
+              <button class="btn btn-primary btn-sm hidden" id="apply-import-btn">
+                Apply Import
+              </button>
+            </div>
+
+            <div id="import-plan" class="hidden" style="margin-top: 16px">
+              <h4 style="margin: 0 0 6px; font-size: 13px">Groups</h4>
+              <div id="plan-groups"></div>
+              <h4 style="margin: 12px 0 6px; font-size: 13px">Contacts</h4>
+              <div id="plan-contacts"></div>
+              <h4 style="margin: 12px 0 6px; font-size: 13px">Presets</h4>
+              <div id="plan-presets"></div>
+            </div>
+
+            <div id="import-result" class="hidden" style="margin-top: 16px">
+              <p class="muted" style="font-size: 13px" id="import-result-text"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/backup.js"></script>
+  </body>
+</html>

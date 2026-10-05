@@ -13,6 +13,7 @@ import { createActivityRouter } from './web/activityRoutes';
 import { createAdminRouter } from './web/adminRoutes';
 import { createApprovalRouter } from './web/approvalRoutes';
 import { createAuthRouter } from './web/authRoutes';
+import { createBackupRouter } from './web/backupRoutes';
 import { createContactRouter } from './web/contactRoutes';
 import { createDashboardRouter } from './web/dashboardRoutes';
 import { createGroupRouter } from './web/groupRoutes';
@@ -100,6 +101,9 @@ export function createServer({
 
   // Authenticated Group Presets — named, reusable settings bundles.
   app.use('/api/group-presets', createPresetRouter());
+
+  // Authenticated Backup/Export — safe configuration only, never credentials.
+  app.use('/api/backup', createBackupRouter());
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });
