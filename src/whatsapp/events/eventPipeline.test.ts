@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { WAMessage } from '@whiskeysockets/baileys';
+import { proto, type WAMessage } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import { AccountSettingsRepository } from '../../db/accountSettingsRepository';
@@ -662,6 +662,25 @@ describe('EventPipeline — self-sent (fromMe) messages: stored/archived, never 
     const rows = fake.rawRows('whatsapp_messages') as Array<{ from_me: boolean }>;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.from_me).toBe(true);
+  });
+
+  it('never stores a self-addressed, non-REVOKE protocolMessage (e.g. a history-sync notification) as if it were real chat content — a real production bug: a fresh pairing emits several of these, self-addressed with fromMe:true, before any real message, and they were being stored as empty "self-sent" rows', async () => {
+    const { pipeline, fake } = setup();
+
+    await pipeline.handleMessage(
+      waPrivateMessage({
+        key: { remoteJid: 'own-lid@lid', fromMe: true, id: 'ACD71E9882DB99B22F69F3AA040CC059' },
+        message: {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION,
+            historySyncNotification: { fileLength: 10 },
+          },
+        },
+      }),
+      'notify',
+    );
+
+    expect(fake.rawRows('whatsapp_messages')).toHaveLength(0);
   });
 
   it('never evaluates rules or runs commands for a self-sent group message', async () => {

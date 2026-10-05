@@ -423,6 +423,17 @@ export class EventPipeline {
     event: NormalizedMessageEvent,
     waMessage: WAMessage,
   ): Promise<void> {
+    // `protocolMessage` reaching here is NEVER real content — the REVOKE
+    // subtype is already intercepted earlier in handleMessage(), so
+    // anything still typed `protocolMessage` here is WhatsApp's own
+    // multi-device housekeeping (history-sync notifications, app-state
+    // key share/request, etc. — confirmed against real production traffic:
+    // a fresh pairing emits several of these, self-addressed, before any
+    // real chat message). Storing these as if they were self-sent chat
+    // content would silently pollute Message Vault/Activity with rows
+    // that have no sender, no text, and nothing a human ever saw.
+    if (event.messageType === 'protocolMessage') return;
+
     let groupId: string | undefined;
     let contactId: string | undefined;
 
