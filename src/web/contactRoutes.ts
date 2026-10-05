@@ -8,6 +8,7 @@ import { MessagesRepository } from '../db/messagesRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
 import { simulateMessage } from '../rules/ruleSimulator';
+import { contactCapabilitySummary, contactRiskLabel } from '../services/riskLabel';
 import { createChildLogger } from '../services/logger';
 import { accountManager } from '../whatsapp/accountManager';
 import { attachSession, requireAuth, requireCsrf } from './authMiddleware';
@@ -134,6 +135,7 @@ export function createContactRouter(): Router {
           privateAiEnabled: settings.privateAiEnabled,
           privateAutoReplyEnabled: settings.privateAutoReplyEnabled,
           ruleCount: rules.length,
+          riskLevel: contactRiskLabel(settings).level,
         };
       }),
     );
@@ -157,7 +159,12 @@ export function createContactRouter(): Router {
       accountManager.listAccounts().find((a) => a.id === contact.accountId)?.label ??
       'Unknown account';
 
-    res.status(200).json({ contact: { ...contact, accountLabel }, settings });
+    res.status(200).json({
+      contact: { ...contact, accountLabel },
+      settings,
+      risk: contactRiskLabel(settings),
+      capabilitySummary: contactCapabilitySummary(settings),
+    });
   });
 
   /** Blocked / allowlisted / displayName — the contact row itself, not its automation settings. */
@@ -277,7 +284,11 @@ export function createContactRouter(): Router {
       detail: { patch, scope: 'private' },
     });
 
-    res.status(200).json({ settings });
+    res.status(200).json({
+      settings,
+      risk: contactRiskLabel(settings),
+      capabilitySummary: contactCapabilitySummary(settings),
+    });
   });
 
   // Human Takeover — see groupRoutes.ts's equivalent for why this is a
@@ -320,7 +331,11 @@ export function createContactRouter(): Router {
       detail: { humanTakeoverUntil: humanTakeoverUntil ?? null },
     });
 
-    res.status(200).json({ settings });
+    res.status(200).json({
+      settings,
+      risk: contactRiskLabel(settings),
+      capabilitySummary: contactCapabilitySummary(settings),
+    });
   });
 
   router.post('/:id/simulate', requireCsrf, async (req: Request, res: Response) => {

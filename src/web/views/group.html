@@ -36,8 +36,22 @@
 
       <div id="group-content" class="hidden">
         <section style="margin-bottom: 20px">
-          <h2 id="group-subject" style="margin: 0 0 4px"></h2>
+          <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap">
+            <h2 id="group-subject" style="margin: 0 0 4px"></h2>
+            <span id="risk-pill"></span>
+          </div>
           <p id="group-meta" class="muted" style="margin: 0; font-size: 13px"></p>
+        </section>
+
+        <section class="card" style="padding: 16px 20px; margin-bottom: 20px">
+          <div class="section-head" style="margin-bottom: 4px">
+            <h3 style="margin: 0; font-size: 14px">Bot Capability Preview</h3>
+          </div>
+          <p class="muted" style="font-size: 12px; margin: 0 0 8px">
+            What this bot can actually do in this group right now, computed from the settings below
+            — not a prediction, the current configuration.
+          </p>
+          <ul id="capability-list" style="margin: 0; padding-left: 18px; font-size: 13px"></ul>
         </section>
 
         <div class="tabs" style="margin-bottom: 20px; flex-wrap: wrap">

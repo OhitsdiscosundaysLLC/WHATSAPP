@@ -96,6 +96,7 @@ describe('group routes — listing and detail', () => {
     expect(found.botEnabled).toBe(false);
     expect(found.monitoringEnabled).toBe(false);
     expect(found.ruleCount).toBe(0);
+    expect(found.riskLevel).toBe('low');
   });
 
   it('returns 404 for an unknown group id', async () => {
@@ -103,13 +104,36 @@ describe('group routes — listing and detail', () => {
     await request(app).get('/api/groups/does-not-exist').set('Cookie', cookie).expect(404);
   });
 
-  it('returns the group and its settings on detail', async () => {
+  it('returns the group, its settings, risk label, and capability summary on detail', async () => {
     const { cookie } = await login();
     const groupId = await seedGroup('detail-test@g.us', 'Detail Test Group');
 
     const res = await request(app).get(`/api/groups/${groupId}`).set('Cookie', cookie).expect(200);
     expect(res.body.group.subject).toBe('Detail Test Group');
     expect(res.body.settings.botEnabled).toBe(false);
+    expect(res.body.risk).toMatchObject({ level: 'low' });
+    expect(res.body.risk.reasons.length).toBeGreaterThan(0);
+    expect(res.body.capabilitySummary).toEqual([
+      'Bot is off — none of the capabilities below can run until it is turned on.',
+      'Currently idle — no monitoring, auto-reply, AI, or moderation capability is active.',
+    ]);
+  });
+
+  it('raises the risk level and lists new capabilities after enabling auto-reply', async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('risk-test@g.us', 'Risk Test Group');
+
+    const res = await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ botEnabled: true, monitoringEnabled: true, autoReplyEnabled: true })
+      .expect(200);
+
+    expect(res.body.risk.level).toBe('medium');
+    expect(res.body.capabilitySummary.some((l: string) => l.includes('automatic replies'))).toBe(
+      true,
+    );
   });
 });
 

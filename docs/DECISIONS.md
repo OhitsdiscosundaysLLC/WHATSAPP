@@ -956,9 +956,12 @@ fully wired, tested, and documented — rather than a broad but shallow pass
 across everything the spec named. Rule Simulator, Automation Templates,
 Group Presets, Quiet Hours/Schedules, Human Takeover, Approval-Before-Send,
 Contact Notes/Tags/VIP/Never-Automate lists, Escalation Rules, Risk Labels,
-Daily Owner Summary, Analytics dashboards, and Backup/Export were not
-attempted and are not implemented — this is stated here rather than left
-to be discovered as a gap.
+Daily Owner Summary, Analytics dashboards, Backup/Export, a general
+(non-view-once) media archive, and the Bot Capability Preview were not
+attempted in Phase 7 — stated here rather than left to be discovered as a
+gap — but were all built in the Phase 8 pass that followed (see
+docs/ARCHITECTURE.md's "Phase 8" section for what each one is and where
+it lives).
 
 ### Decision: private contacts duplicate the group rule-firing path rather than generalizing it
 

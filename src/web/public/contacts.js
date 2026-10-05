@@ -17,6 +17,11 @@
     return span;
   }
 
+  const RISK_PILL_CLASS = { low: 'status-neutral', medium: 'status-warn', high: 'status-error' };
+  function riskPill(level) {
+    return pill('Risk: ' + level, RISK_PILL_CLASS[level] || 'status-neutral');
+  }
+
   const list = document.getElementById('contact-list');
   const emptyState = document.getElementById('empty-state');
   const unconfiguredState = document.getElementById('unconfigured-state');
@@ -70,6 +75,7 @@
             contact.privateAutoReplyEnabled ? 'status-connected' : 'status-neutral',
           ),
         );
+        pills.appendChild(riskPill(contact.riskLevel));
       }
 
       row.appendChild(main);

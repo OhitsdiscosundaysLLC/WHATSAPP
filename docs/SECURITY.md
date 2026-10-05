@@ -272,6 +272,20 @@ threshold}`) — never the full matched message text, never credentials or
 - Neither table is optional scaffolding — both exist from Phase 4+5 onward
   so the owner can always answer "why did the bot do that?" (or "why
   didn't it," for a cooldown-skipped or no-owner-configured skip).
+- The dashboard's Activity tab (group, contact, and the standalone
+  `/activity` page) renders this `detail` as a plain sentence —
+  `explainEntry()` in `group.js`/`contact.js`/`activity.js` — rather than a
+  raw JSON dump, turning already-recorded fields (`ruleName`, `triggerType`,
+  `actionStatus`, a skip `reason`, `wouldHaveActed`, …) into "why did the
+  bot do this" in practice, not just in principle. It never adds data the
+  backend didn't already capture.
+- `src/services/riskLabel.ts` computes a Risk Label (`low`/`medium`/`high`,
+  always paired with plain-language reasons) and a Bot Capability Preview
+  (what this group/contact's current settings actually permit, in
+  sentences) directly from the live `GroupSettings`/`ContactSettings` on
+  every read — never cached, never a separate snapshot that could drift.
+  Dry Run always forces the computed level down to `low`, since nothing it
+  enables executes for real.
 
 ## WhatsApp authentication material (Phase 2)
 

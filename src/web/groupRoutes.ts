@@ -13,6 +13,7 @@ import { PresetsRepository, presetSettingsToGroupPatch } from '../db/presetsRepo
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
 import { TRIGGER_TYPES } from '../rules/ruleConfig';
+import { groupCapabilitySummary, groupRiskLabel } from '../services/riskLabel';
 import { simulateMessage } from '../rules/ruleSimulator';
 import { createChildLogger } from '../services/logger';
 import { accountManager } from '../whatsapp/accountManager';
@@ -222,6 +223,7 @@ export function createGroupRouter(): Router {
           monitoringEnabled: settings.monitoringEnabled,
           aiEnabled: settings.aiEnabled,
           ruleCount: rules.length,
+          riskLevel: groupRiskLabel(settings).level,
         };
       }),
     );
@@ -245,7 +247,12 @@ export function createGroupRouter(): Router {
       accountManager.listAccounts().find((a) => a.id === group.accountId)?.label ??
       'Unknown account';
 
-    res.status(200).json({ group: { ...group, accountLabel }, settings });
+    res.status(200).json({
+      group: { ...group, accountLabel },
+      settings,
+      risk: groupRiskLabel(settings),
+      capabilitySummary: groupCapabilitySummary(settings),
+    });
   });
 
   router.patch('/:id/settings', requireCsrf, async (req: Request, res: Response) => {
@@ -349,7 +356,11 @@ export function createGroupRouter(): Router {
       detail: { patch },
     });
 
-    res.status(200).json({ settings });
+    res.status(200).json({
+      settings,
+      risk: groupRiskLabel(settings),
+      capabilitySummary: groupCapabilitySummary(settings),
+    });
   });
 
   // Human Takeover — a friendly action endpoint over the same
@@ -391,7 +402,11 @@ export function createGroupRouter(): Router {
       detail: { humanTakeoverUntil: humanTakeoverUntil ?? null },
     });
 
-    res.status(200).json({ settings });
+    res.status(200).json({
+      settings,
+      risk: groupRiskLabel(settings),
+      capabilitySummary: groupCapabilitySummary(settings),
+    });
   });
 
   router.post('/:id/apply-preset', requireCsrf, async (req: Request, res: Response) => {
@@ -433,7 +448,11 @@ export function createGroupRouter(): Router {
       detail: { presetId, presetName: preset.name },
     });
 
-    res.status(200).json({ settings });
+    res.status(200).json({
+      settings,
+      risk: groupRiskLabel(settings),
+      capabilitySummary: groupCapabilitySummary(settings),
+    });
   });
 
   router.post('/:id/simulate', requireCsrf, async (req: Request, res: Response) => {

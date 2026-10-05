@@ -96,6 +96,7 @@ describe('contact routes — listing and detail', () => {
     expect(found.privateMonitoringEnabled).toBe(false);
     expect(found.privateAiEnabled).toBe(false);
     expect(found.ruleCount).toBe(0);
+    expect(found.riskLevel).toBe('low');
   });
 
   it('404s for an unknown contact id', async () => {
@@ -103,7 +104,7 @@ describe('contact routes — listing and detail', () => {
     await request(app).get('/api/contacts/does-not-exist').set('Cookie', cookie).expect(404);
   });
 
-  it('returns a single contact with settings', async () => {
+  it('returns a single contact with settings, risk label, and capability summary', async () => {
     const { cookie } = await login();
     const contactId = await seedContact('detail-test@s.whatsapp.net');
 
@@ -113,6 +114,27 @@ describe('contact routes — listing and detail', () => {
       .expect(200);
     expect(res.body.contact.id).toBe(contactId);
     expect(res.body.settings.privateAutoReplyEnabled).toBe(false);
+    expect(res.body.risk).toMatchObject({ level: 'low' });
+    expect(res.body.capabilitySummary).toEqual([
+      'Currently idle — no monitoring, auto-reply, or AI capability is active.',
+    ]);
+  });
+
+  it('raises the risk level after enabling private auto-reply', async () => {
+    const { cookie, csrfToken } = await login();
+    const contactId = await seedContact('risk-test@s.whatsapp.net');
+
+    const res = await request(app)
+      .patch(`/api/contacts/${contactId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ privateMonitoringEnabled: true, privateAutoReplyEnabled: true })
+      .expect(200);
+
+    expect(res.body.risk.level).toBe('medium');
+    expect(res.body.capabilitySummary.some((l: string) => l.includes('automatic replies'))).toBe(
+      true,
+    );
   });
 });
 

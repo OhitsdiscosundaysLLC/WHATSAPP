@@ -45,6 +45,31 @@
   const groupSubject = document.getElementById('group-subject');
   const groupMeta = document.getElementById('group-meta');
 
+  // ---------- Risk label + Bot Capability Preview ----------
+
+  const RISK_PILL_CLASS = { low: 'status-neutral', medium: 'status-warn', high: 'status-error' };
+
+  function renderCapability(risk, capabilitySummary) {
+    const riskPillEl = document.getElementById('risk-pill');
+    riskPillEl.innerHTML = '';
+    if (risk) {
+      const pill = document.createElement('span');
+      pill.className = 'status-pill ' + (RISK_PILL_CLASS[risk.level] || 'status-neutral');
+      pill.title = risk.reasons.join(' ');
+      pill.innerHTML = '<span class="status-dot"></span><span></span>';
+      pill.querySelector('span:last-child').textContent = 'Risk: ' + risk.level;
+      riskPillEl.appendChild(pill);
+    }
+
+    const list = document.getElementById('capability-list');
+    list.innerHTML = '';
+    for (const line of capabilitySummary || []) {
+      const li = document.createElement('li');
+      li.textContent = line;
+      list.appendChild(li);
+    }
+  }
+
   // ---------- Section tabs ----------
 
   document.querySelectorAll('[data-section-tab]').forEach((btn) => {
@@ -105,6 +130,7 @@
     if (!res.ok) throw new Error('failed');
     const data = await res.json();
     currentSettings = data.settings;
+    renderCapability(data.risk, data.capabilitySummary);
     return data.settings;
   }
 
@@ -302,6 +328,7 @@
       const data = await res.json();
       currentSettings = data.settings;
       renderGeneral(data.settings);
+      renderCapability(data.risk, data.capabilitySummary);
     } catch (err) {
       if (err.message !== 'unauthenticated')
         takeoverError.textContent = 'Could not start takeover.';
@@ -328,6 +355,7 @@
       const data = await res.json();
       currentSettings = data.settings;
       renderGeneral(data.settings);
+      renderCapability(data.risk, data.capabilitySummary);
     } catch (err) {
       if (err.message !== 'unauthenticated') takeoverError.textContent = 'Could not resume.';
     }
@@ -1356,6 +1384,110 @@
     );
   }
 
+  function fmtBytes(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function prettyAction(actionType) {
+    return (actionType || '').toLowerCase().replace(/_/g, ' ');
+  }
+
+  // "Why did the bot do this?" — turns the already-captured audit/action
+  // detail into a plain sentence instead of a raw JSON dump. Never adds
+  // new data: everything here was already recorded by ruleEngine.ts /
+  // deletedMessageHandler.ts / mediaArchiveHandler.ts at the time.
+  function explainEntry(entry, kind) {
+    const d = entry.detail || {};
+    if (kind === 'action') {
+      let text = 'Action: ' + prettyAction(entry.actionType) + ' — ' + entry.status + '.';
+      if (d.reason === 'cooldown_active') {
+        text +=
+          ' Skipped: still in cooldown' +
+          (d.remainingSeconds ? ' (' + d.remainingSeconds + 's remaining)' : '') +
+          '.';
+      } else if (d.reason === 'dry_run') {
+        text +=
+          ' Dry Run — would have: ' + (d.wouldHaveActed || prettyAction(entry.actionType)) + '.';
+      } else if (d.message) {
+        text += ' ' + d.message;
+      }
+      return text;
+    }
+
+    switch (entry.eventType) {
+      case 'rule.fired':
+        return (
+          'Rule "' +
+          d.ruleName +
+          '" (' +
+          (d.triggerType || '') +
+          ') matched. Action: ' +
+          prettyAction(d.actionType) +
+          ' — ' +
+          d.actionStatus +
+          '.'
+        );
+      case 'rule.fired_but_action_skipped':
+        return (
+          'Rule "' +
+          d.ruleName +
+          '" matched but the action was skipped (' +
+          (d.reason === 'cooldown_active'
+            ? 'still in cooldown' +
+              (d.remainingSeconds ? ', ' + d.remainingSeconds + 's remaining' : '')
+            : d.reason) +
+          ').'
+        );
+      case 'rule.dry_run':
+        return 'Dry Run: rule "' + d.ruleName + '" matched. Would have: ' + d.wouldHaveActed + '.';
+      case 'escalation.fired':
+        return (
+          'Escalation rule "' +
+          d.ruleName +
+          '" fired (category: ' +
+          d.category +
+          ') — owner notified.'
+        );
+      case 'escalation.dry_run':
+        return (
+          'Dry Run: escalation rule "' +
+          d.ruleName +
+          '" would have fired (category: ' +
+          d.category +
+          ').'
+        );
+      case 'automation.paused_skip':
+        return 'Emergency Pause is on — no automatic action was taken.';
+      case 'message.deleted':
+        return (
+          'A message was deleted.' +
+          (d.archived
+            ? ' Archived before deletion.'
+            : ' Not archived (monitoring was off when it arrived).') +
+          (d.hasArchivedMedia ? ' Its media is still viewable.' : '')
+        );
+      case 'media.archived':
+        return 'Archived incoming media (' + d.mimeType + ', ' + fmtBytes(d.fileSizeBytes) + ').';
+      case 'media.view_once_archived':
+        return 'Archived a view-once ' + d.mimeType + ' before it disappeared.';
+      case 'config.changed':
+        return 'Owner changed settings: ' + Object.keys(d.patch || {}).join(', ') + '.';
+      case 'preset.applied':
+        return 'Applied preset "' + d.presetName + '".';
+      case 'human_takeover.changed':
+        return d.humanTakeoverUntil
+          ? 'Human Takeover started.'
+          : 'Human Takeover ended — automation resumed.';
+      case 'message.received':
+        return 'Message received (' + d.messageType + ').';
+      default:
+        return entry.eventType.replace(/\./g, ' ');
+    }
+  }
+
   async function loadActivity() {
     try {
       const res = await api('/api/activity?groupId=' + encodeURIComponent(groupId) + '&limit=25');
@@ -1376,7 +1508,7 @@
         label.textContent = describeEntry(entry, entry.kind);
         const detail = document.createElement('div');
         detail.className = 'activity-detail';
-        detail.textContent = entry.detail ? JSON.stringify(entry.detail) : '';
+        detail.textContent = explainEntry(entry, entry.kind);
         const time = document.createElement('div');
         time.className = 'activity-time';
         time.textContent = fmtDate(entry.createdAt);
@@ -1430,6 +1562,8 @@
       renderModeration(data.settings);
       renderArchive(data.settings);
       renderViewOnce(data.settings);
+      renderMediaArchiveToggles(data.settings);
+      renderCapability(data.risk, data.capabilitySummary);
       select.value = '';
       flashSaved(event.currentTarget);
     } catch (err) {
@@ -1462,6 +1596,7 @@
       renderArchive(data.settings);
       renderViewOnce(data.settings);
       renderMediaArchiveToggles(data.settings);
+      renderCapability(data.risk, data.capabilitySummary);
       content.classList.remove('hidden');
 
       await Promise.all([

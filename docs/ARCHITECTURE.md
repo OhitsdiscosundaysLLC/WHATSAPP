@@ -390,8 +390,21 @@ it:
 
 See docs/DECISIONS.md ADR-014 for the full design rationale, including why
 private contacts duplicate the group rule-firing path instead of
-generalizing it, why `allowlisted` is deliberately not a permission gate,
-and what from the broader product spec was explicitly not attempted this
-phase (Rule Simulator, Templates, Presets, Schedules, Human Takeover,
-Approval-Before-Send, Contact Tags/VIP, Escalation Rules, Risk Labels,
-Daily Summary, Analytics, Backup/Export).
+generalizing it, and why `allowlisted` is deliberately not a permission
+gate.
+
+**Phase 8** — everything named above as "not attempted this phase" was
+built afterward, each fully wired end-to-end (dashboard → API →
+validation → Supabase → runtime → audit → test), without reworking the
+Phase 4-7 infrastructure: tags/VIP/never-automate, Escalation Rules, Quiet
+Hours, Human Takeover, Approval Before Send, Rule Simulator (reuses the
+real `RuleEngine`, never a second engine), Automation Templates + Group
+Presets, Daily Owner Summary, Analytics (`src/services/metrics.ts` shared
+by both), Backup/Export (`src/services/backupExport.ts`/`backupImport.ts`
+— configuration only, never a credential), a general non-view-once media
+archive for both groups and private contacts
+(`src/whatsapp/archive/mediaArchiveHandler.ts`, alongside the existing
+view-once-only handler), and the Bot Capability Preview + Risk Labels +
+"why did the bot do this" explanations
+(`src/services/riskLabel.ts`, computed fresh from live settings on every
+read, never cached or allowed to drift from them).
