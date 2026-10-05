@@ -15,6 +15,12 @@ import {
   type PrivateDeletedMessageHandlerDeps,
 } from '../archive/deletedMessageHandler';
 import {
+  DEFAULT_PRIVATE_MEDIA_MAX_FILE_SIZE_BYTES,
+  handleGeneralMediaMessage,
+  isGeneralMediaMessageType,
+  type MediaArchiveHandlerDeps,
+} from '../archive/mediaArchiveHandler';
+import {
   handleViewOnceMessage,
   isViewOnceMessageType,
   type ViewOnceHandlerDeps,
@@ -41,6 +47,7 @@ export interface EventPipelineDeps {
   deletedMessageHandlerDeps: Omit<DeletedMessageHandlerDeps, 'accountId'>;
   privateDeletedMessageHandlerDeps: Omit<PrivateDeletedMessageHandlerDeps, 'accountId'>;
   viewOnceHandlerDeps: Omit<ViewOnceHandlerDeps, 'accountId'>;
+  mediaArchiveHandlerDeps: Omit<MediaArchiveHandlerDeps, 'accountId'>;
   commandHandlerDeps: CommandHandlerDeps;
   privateCommandHandlerDeps: PrivateCommandHandlerDeps;
   logger: Logger;
@@ -148,6 +155,28 @@ export class EventPipeline {
         },
       ).catch((err: unknown) =>
         this.deps.logger.error({ err }, 'Failed to process view-once media'),
+      );
+    }
+
+    // General (non-view-once) media archive — opt-in, independent of
+    // view-once handling above; a sticker/image/video/audio/document is
+    // archived here, a view-once wrapper is archived above, never both for
+    // the same message since `event.messageType` can only be one value.
+    if (
+      settings.mediaArchiveEnabled &&
+      settings.monitoringEnabled &&
+      isGeneralMediaMessageType(event.messageType)
+    ) {
+      await handleGeneralMediaMessage(
+        waMessage,
+        event.whatsappMessageId,
+        event.senderJid,
+        event.messageType,
+        { groupId: group.id, contactId: undefined },
+        settings.mediaMaxFileSizeBytes,
+        { accountId: this.deps.accountId, ...this.deps.mediaArchiveHandlerDeps },
+      ).catch((err: unknown) =>
+        this.deps.logger.error({ err }, 'Failed to process general media archive'),
       );
     }
 
@@ -266,6 +295,27 @@ export class EventPipeline {
 
     if (settings.privateMonitoringEnabled) {
       await this.deps.messagesRepository.store(event, { contactId: contact.id });
+    }
+
+    // General (non-view-once) media archive — DM-side equivalent of the
+    // group branch above. Private chats have no configurable size-limit
+    // field, so this uses the same fixed default every group starts with.
+    if (
+      settings.mediaArchiveEnabled &&
+      settings.privateMonitoringEnabled &&
+      isGeneralMediaMessageType(event.messageType)
+    ) {
+      await handleGeneralMediaMessage(
+        waMessage,
+        event.whatsappMessageId,
+        event.senderJid,
+        event.messageType,
+        { groupId: undefined, contactId: contact.id },
+        DEFAULT_PRIVATE_MEDIA_MAX_FILE_SIZE_BYTES,
+        { accountId: this.deps.accountId, ...this.deps.mediaArchiveHandlerDeps },
+      ).catch((err: unknown) =>
+        this.deps.logger.error({ err }, 'Failed to process general media archive'),
+      );
     }
 
     const identityCandidates = extractIdentityCandidates(waMessage, false);

@@ -326,3 +326,50 @@ describe('contact routes — Rule Simulator', () => {
     });
   });
 });
+
+describe('contact routes — media archive', () => {
+  it('lists archived media for a contact (empty when none archived)', async () => {
+    const { cookie } = await login();
+    const contactId = await seedContact('media-list@s.whatsapp.net');
+    const res = await request(app)
+      .get(`/api/contacts/${contactId}/media-archive`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body.media).toEqual([]);
+  });
+
+  it('returns 404 for a media id that does not exist', async () => {
+    const { cookie } = await login();
+    const contactId = await seedContact('media-404@s.whatsapp.net');
+    await request(app)
+      .get(`/api/contacts/${contactId}/media-archive/does-not-exist/url`)
+      .set('Cookie', cookie)
+      .expect(404);
+  });
+
+  it('lists an archived item recorded directly against this contact', async () => {
+    const { cookie } = await login();
+    const contactId = await seedContact('media-item@s.whatsapp.net');
+    const { MediaArchiveRepository } = await import('../db/mediaArchiveRepository');
+    const mediaArchiveRepository = new MediaArchiveRepository(fakeClient as never);
+    await mediaArchiveRepository.record({
+      accountId: 'acct-seed',
+      groupId: undefined,
+      contactId,
+      whatsappMessageId: 'MSG1',
+      senderJid: 'media-item@s.whatsapp.net',
+      isViewOnce: false,
+      storagePath: 'acct-seed/contact-x/MSG1',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 1234,
+      sha256: undefined,
+    });
+
+    const res = await request(app)
+      .get(`/api/contacts/${contactId}/media-archive`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body.media).toHaveLength(1);
+    expect(res.body.media[0]).toMatchObject({ contactId, mimeType: 'image/jpeg' });
+  });
+});

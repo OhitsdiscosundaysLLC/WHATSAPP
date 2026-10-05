@@ -296,17 +296,20 @@ auditing "why did the bot call OpenAI." Never stores prompt/response text.
 
 ### `whatsapp_media_archive`
 
-Metadata for archived media (view-once today; general archiving is
-reserved). The bytes live in the private `whatsapp-media` Supabase Storage
-bucket (`public: false`, no anonymous policies), never in a Postgres
-column — see `src/whatsapp/archive/viewOnceHandler.ts`.
+Metadata for archived media — both view-once (`src/whatsapp/archive/viewOnceHandler.ts`)
+and ordinary images/video/audio/documents/stickers
+(`src/whatsapp/archive/mediaArchiveHandler.ts`), for groups and private
+contacts alike. The bytes live in the private `whatsapp-media` Supabase
+Storage bucket (`public: false`, no anonymous policies), never in a
+Postgres column.
 
 | column                  | type                                  | notes                                                                          |
 | ----------------------- | ------------------------------------- | ------------------------------------------------------------------------------ |
 | id                      | uuid pk                               |                                                                                |
 | account_id              | uuid, fk → whatsapp_accounts, cascade |                                                                                |
-| group_id                | uuid nullable, fk, on delete set null |                                                                                |
-| whatsapp_message_id     | text                                  |                                                                                |
+| group_id                | uuid nullable, fk, on delete set null | exactly one of group_id/contact_id is set                                      |
+| contact_id              | uuid nullable, fk, on delete set null | exactly one of group_id/contact_id is set                                      |
+| whatsapp_message_id     | text                                  | indexed with account_id — REVOKE-time lookup, see docs/SECURITY.md             |
 | sender_jid              | text                                  |                                                                                |
 | is_view_once            | boolean default false                 |                                                                                |
 | storage_path            | text                                  | path within `whatsapp-media`                                                   |

@@ -434,8 +434,16 @@
     { key: 'deletedMessageArchiveEnabled', label: 'Deleted-message archive' },
   ];
   const VIEWONCE_TOGGLES = [{ key: 'viewOnceHandlingEnabled', label: 'View-once handling' }];
+  const MEDIA_ARCHIVE_TOGGLES = [
+    {
+      key: 'mediaArchiveEnabled',
+      label: 'General media archive',
+      help: 'Archives ordinary (non-view-once) images, videos, audio, documents, and stickers.',
+    },
+  ];
   const archiveToggles = document.getElementById('archive-toggles');
   const viewonceToggles = document.getElementById('viewonce-toggles');
+  const mediaArchiveToggles = document.getElementById('media-archive-toggles');
   const archiveError = document.getElementById('archive-error');
 
   // See renderGeneralToggles() above — toggling must never clobber an
@@ -460,6 +468,8 @@
   function renderArchive(settings) {
     renderArchiveToggles(settings);
     document.getElementById('retention-days').value = settings.deletedMessageRetentionDays || '';
+    document.getElementById('alert-mode').value =
+      settings.deletedMessageAlertMode || 'archive_only';
   }
 
   function renderViewOnce(settings) {
@@ -478,12 +488,32 @@
     }
   }
 
+  function renderMediaArchiveToggles(settings) {
+    mediaArchiveToggles.innerHTML = '';
+    for (const def of MEDIA_ARCHIVE_TOGGLES) {
+      mediaArchiveToggles.appendChild(
+        renderToggleRow(def, settings, async (key, value) => {
+          archiveError.textContent = '';
+          try {
+            renderMediaArchiveToggles(await patchSettings({ [key]: value }));
+          } catch (err) {
+            if (err.message !== 'unauthenticated') archiveError.textContent = 'Could not save.';
+          }
+        }),
+      );
+    }
+  }
+
   document.getElementById('save-archive-btn').addEventListener('click', async (event) => {
     archiveError.textContent = '';
     const raw = document.getElementById('retention-days').value;
+    const alertMode = document.getElementById('alert-mode').value;
     try {
       renderArchive(
-        await patchSettings({ deletedMessageRetentionDays: raw === '' ? null : Number(raw) }),
+        await patchSettings({
+          deletedMessageRetentionDays: raw === '' ? null : Number(raw),
+          deletedMessageAlertMode: alertMode,
+        }),
       );
       flashSaved(event.currentTarget);
     } catch (err) {
@@ -523,6 +553,43 @@
     }
   }
 
+  // Shared by group.js and contact.js's media archive section — renders an
+  // inline img/video/audio player for a signed URL (falls back to a plain
+  // download link for types browsers can't preview, e.g. documents).
+  function renderInlineMediaPreview(container, mimeType, url) {
+    container.innerHTML = '';
+    let el;
+    if (mimeType.startsWith('image/')) {
+      el = document.createElement('img');
+      el.src = url;
+      el.style.maxWidth = '280px';
+      el.style.maxHeight = '280px';
+      el.style.display = 'block';
+      el.style.borderRadius = '6px';
+    } else if (mimeType.startsWith('video/')) {
+      el = document.createElement('video');
+      el.src = url;
+      el.controls = true;
+      el.style.maxWidth = '280px';
+      el.style.maxHeight = '280px';
+    } else if (mimeType.startsWith('audio/')) {
+      el = document.createElement('audio');
+      el.src = url;
+      el.controls = true;
+    }
+    if (el) container.appendChild(el);
+
+    const downloadLink = document.createElement('a');
+    downloadLink.href = url;
+    downloadLink.target = '_blank';
+    downloadLink.rel = 'noopener';
+    downloadLink.textContent = el ? 'Download' : 'Download / open';
+    downloadLink.style.display = 'block';
+    downloadLink.style.marginTop = '4px';
+    downloadLink.style.fontSize = '12px';
+    container.appendChild(downloadLink);
+  }
+
   async function loadMediaArchive() {
     const list = document.getElementById('media-list');
     const empty = document.getElementById('media-empty');
@@ -550,13 +617,22 @@
         const viewBtn = document.createElement('button');
         viewBtn.className = 'btn btn-sm';
         viewBtn.textContent = 'View';
+        const preview = document.createElement('div');
+        preview.className = 'hidden';
+        preview.style.marginTop = '8px';
         viewBtn.addEventListener('click', async () => {
+          if (!preview.classList.contains('hidden')) {
+            preview.classList.add('hidden');
+            return;
+          }
           const urlRes = await api('/api/groups/' + groupId + '/media-archive/' + item.id + '/url');
           if (!urlRes.ok) return;
           const urlData = await urlRes.json();
-          window.open(urlData.url, '_blank', 'noopener');
+          renderInlineMediaPreview(preview, item.mimeType, urlData.url);
+          preview.classList.remove('hidden');
         });
         detail.appendChild(viewBtn);
+        detail.appendChild(preview);
         const time = document.createElement('div');
         time.className = 'activity-time';
         time.textContent = fmtDate(item.createdAt);
@@ -1385,6 +1461,7 @@
       renderModeration(data.settings);
       renderArchive(data.settings);
       renderViewOnce(data.settings);
+      renderMediaArchiveToggles(data.settings);
       content.classList.remove('hidden');
 
       await Promise.all([

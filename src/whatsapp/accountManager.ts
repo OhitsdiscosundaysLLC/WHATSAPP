@@ -391,6 +391,7 @@ export class AccountManager {
         deletedMessageHandlerDeps: {
           groupsRepository,
           messagesRepository,
+          mediaArchiveRepository,
           auditRepository,
           ownerInbox,
           notificationCooldowns,
@@ -401,6 +402,7 @@ export class AccountManager {
         privateDeletedMessageHandlerDeps: {
           contactsRepository,
           messagesRepository,
+          mediaArchiveRepository,
           auditRepository,
           ownerInbox,
           notificationCooldowns,
@@ -409,6 +411,12 @@ export class AccountManager {
           logger: createChildLogger(`whatsapp:account:${accountId}:deleted-private`),
         },
         viewOnceHandlerDeps: {
+          supabase,
+          mediaArchiveRepository,
+          auditRepository,
+          logger: createChildLogger(`whatsapp:account:${accountId}:media`),
+        },
+        mediaArchiveHandlerDeps: {
           supabase,
           mediaArchiveRepository,
           auditRepository,

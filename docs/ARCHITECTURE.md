@@ -344,10 +344,12 @@ See docs/DECISIONS.md ADR-013 for the full design rationale, including why
 independent gates, and why call handling is account-scoped.
 
 Explicitly **not built** by this phase, per the product spec's own
-instruction: AI-powered moderation (moderation stays deterministic-only),
-a general (non-view-once) media archive, and a global cross-group AI rate
-limit. (Private-DM automation itself was built in Phase 7 below — still
-opt-in and off by default, same as group automation.)
+instruction: AI-powered moderation (moderation stays deterministic-only)
+and a global cross-group AI rate limit. (Private-DM automation itself was
+built in Phase 7 below — still opt-in and off by default, same as group
+automation. A general, non-view-once media archive — for both groups and
+private contacts — was added later; see `src/whatsapp/archive/mediaArchiveHandler.ts`
+and the "Media retention" section of docs/SECURITY.md.)
 
 **Phase 7** — private (DM) automation parity with groups, dashboard-managed
 admin accounts, a System Health page, Emergency Pause, Dry Run mode, and

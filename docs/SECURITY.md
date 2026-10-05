@@ -190,29 +190,43 @@ to drift out of sync, and it survives a restart):
   highly-active groups could still see significant aggregate OpenAI spend;
   revisit if that becomes a real concern.
 
-## Media retention (view-once — implemented foundation; general media archive — not yet built)
+## Media retention (view-once and general media archive — both implemented)
 
-View-once media can contain sensitive personal content.
-`src/whatsapp/archive/viewOnceHandler.ts` implements:
+View-once and ordinary media can contain sensitive personal content.
+`src/whatsapp/archive/viewOnceHandler.ts` (view-once only) and
+`src/whatsapp/archive/mediaArchiveHandler.ts` (ordinary images, videos,
+audio, documents, stickers — group **and** private-contact chats) share
+the same posture:
 
-- **Off by default, per group** (`view_once_handling_enabled`) — same
-  opt-in posture as every other automation toggle. Also requires
-  `monitoring_enabled`.
+- **Off by default, per group/contact** (`view_once_handling_enabled` /
+  `media_archive_enabled`) — same opt-in posture as every other
+  automation toggle. Also requires monitoring (`monitoring_enabled` /
+  `private_monitoring_enabled`) to already be on. The two toggles are
+  independent: a group can archive view-once media without archiving
+  everything else, or vice versa — a message can only ever match one of
+  the two handlers (view-once wrapper types vs. ordinary media types are
+  mutually exclusive on the wire), so nothing is ever archived twice.
 - **Size limits enforced before download**: `group_settings.media_max_file_size_bytes`
-  (default 16 MiB) is checked against Baileys' own declared `fileLength`
-  before any bytes are fetched; the actual downloaded buffer is checked
-  again and discarded (never uploaded) if it exceeds the limit regardless.
-- **Type allowlist**: only `imageMessage`/`videoMessage` inner content is
-  archived; any other view-once content type is logged and skipped, never
-  guessed at.
+  (default 16 MiB; private contacts use the same fixed default, since
+  there is no per-contact size-limit field) is checked against Baileys'
+  own declared `fileLength` before any bytes are fetched; the actual
+  downloaded buffer is checked again and discarded (never uploaded) if it
+  exceeds the limit regardless.
+- **Type allowlist**: view-once archives only `imageMessage`/`videoMessage`
+  inner content; general media archives `imageMessage`/`videoMessage`/
+  `audioMessage`/`documentMessage`/`stickerMessage`. Any other content
+  type is logged and skipped, never guessed at.
 - **Bytes and metadata are separated**: the actual file goes to a private
   Supabase Storage bucket (`whatsapp-media`, `public: false`, no
   anonymous/public policies — same default-deny posture as every table in
   this project); only metadata (`whatsapp_media_archive` — sender, mime
-  type, size, sha256, storage path) lives in Postgres. The dashboard never
-  gets a public URL — `GET /api/groups/:id/media-archive/:mediaId/url`
-  mints a 60-second signed URL per request, authenticated-owner-session
-  only.
+  type, size, sha256, storage path, and exactly one of `group_id`/
+  `contact_id`) lives in Postgres. The dashboard never gets a public URL —
+  `GET /api/groups/:id/media-archive/:mediaId/url` and its private-contact
+  equivalent (`GET /api/contacts/:id/media-archive/:mediaId/url`) each mint
+  a 60-second signed URL per request, authenticated-owner-session only.
+  The dashboard renders an inline `<img>`/`<video>`/`<audio>` preview from
+  that signed URL (plus a download link) rather than only linking out.
 - **Retention**: `deleted_message_retention_days` governs archived
   deleted-message _text_ (see below); a dedicated retention policy for
   _media_ specifically is not yet implemented — archived media currently
@@ -224,6 +238,18 @@ View-once media can contain sensitive personal content.
   `MessagesRepository.purgeExpiredDeletedContent()` — clears
   `text_content` only, keeps the row (and its deletion metadata) for audit
   continuity.
+- **`deleted_message_alert_mode`** (`archive_only` default / `dashboard` /
+  `whatsapp` / `both`) controls _where the owner is told_ about a
+  detected deletion — it never controls whether the deletion itself is
+  detected or archived, which always happens unconditionally once
+  `deletedMessageArchiveEnabled`/`privateDeletedMessageArchiveEnabled` is
+  on. `archive_only` (the safe default) writes nothing to the Owner Inbox
+  and sends no WhatsApp message; `dashboard`/`whatsapp` each enable one
+  channel; `both` enables both. If the deleted message had archived media,
+  `deletedMessageHandler.ts` looks it up (`MediaArchiveRepository.findByMessageId`)
+  and both the audit event and any WhatsApp notification mention that the
+  media is still viewable — a read-only link between two independent
+  archival paths, never a new write.
 
 ## Audit logging (implemented — Phase 4+5)
 

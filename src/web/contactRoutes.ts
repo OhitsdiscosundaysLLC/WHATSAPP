@@ -3,6 +3,7 @@ import { config } from '../config/config';
 import { AuditRepository } from '../db/auditRepository';
 import { ContactsRepository, type ContactSettingsPatch } from '../db/contactsRepository';
 import { DELETED_MESSAGE_ALERT_MODES, type DeletedMessageAlertMode } from '../db/groupsRepository';
+import { MediaArchiveRepository } from '../db/mediaArchiveRepository';
 import { MessagesRepository } from '../db/messagesRepository';
 import { RulesRepository } from '../db/rulesRepository';
 import { getSupabaseClient, isSupabaseConfigured } from '../db/supabaseClient';
@@ -507,6 +508,38 @@ export function createContactRouter(): Router {
     const messagesRepository = new MessagesRepository(getSupabaseClient());
     const messages = await messagesRepository.listDeletedByContact(id);
     res.status(200).json({ messages });
+  });
+
+  // Archived media (view-once + general) — metadata only here; actual bytes
+  // are fetched via a short-lived signed URL, never a public link. DM-side
+  // equivalent of groupRoutes.ts's media-archive routes.
+  router.get('/:id/media-archive', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id } = req.params as { id: string };
+    const mediaArchiveRepository = new MediaArchiveRepository(getSupabaseClient());
+    const media = await mediaArchiveRepository.listByContact(id);
+    res.status(200).json({ media });
+  });
+
+  router.get('/:id/media-archive/:mediaId/url', async (req: Request, res: Response) => {
+    if (!requireSupabase(res)) return;
+    const { id, mediaId } = req.params as { id: string; mediaId: string };
+    const supabase = getSupabaseClient();
+    const mediaArchiveRepository = new MediaArchiveRepository(supabase);
+    const items = await mediaArchiveRepository.listByContact(id, 500);
+    const item = items.find((m) => m.id === mediaId);
+    if (!item) {
+      res.status(404).json({ error: 'media_not_found' });
+      return;
+    }
+    const { data, error } = await supabase.storage
+      .from('whatsapp-media')
+      .createSignedUrl(item.storagePath, 60); // 60s — just long enough for the dashboard to load it
+    if (error || !data) {
+      res.status(500).json({ error: 'signing_failed' });
+      return;
+    }
+    res.status(200).json({ url: data.signedUrl });
   });
 
   return router;

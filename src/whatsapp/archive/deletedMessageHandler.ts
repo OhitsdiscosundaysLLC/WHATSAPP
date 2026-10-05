@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 import type { AuditRepository } from '../../db/auditRepository';
 import type { ContactsRepository } from '../../db/contactsRepository';
 import type { GroupsRepository } from '../../db/groupsRepository';
+import type { MediaArchiveRepository } from '../../db/mediaArchiveRepository';
 import type { MessagesRepository } from '../../db/messagesRepository';
 import type { NotificationCooldownRepository } from '../../db/notificationCooldownRepository';
 import type { OwnerInboxRepository } from '../../db/ownerInboxRepository';
@@ -42,6 +43,7 @@ export interface DeletedMessageHandlerDeps {
   accountId: string;
   groupsRepository: GroupsRepository;
   messagesRepository: MessagesRepository;
+  mediaArchiveRepository: MediaArchiveRepository;
   auditRepository: AuditRepository;
   ownerInbox: OwnerInboxRepository;
   notificationCooldowns: NotificationCooldownRepository;
@@ -77,6 +79,13 @@ export async function handleDeletedMessage(
     revokedKey.remoteJid,
     revokedKey.id,
   );
+  // Media (view-once or general) is archived independently, at the time
+  // the message first arrived — this is a read-only lookup to tell the
+  // owner it's still viewable, never a new archive write.
+  const archivedMedia = await deps.mediaArchiveRepository.findByMessageId(
+    deps.accountId,
+    revokedKey.id,
+  );
 
   await deps.auditRepository.recordEvent({
     accountId: deps.accountId,
@@ -86,20 +95,32 @@ export async function handleDeletedMessage(
       whatsappMessageId: revokedKey.id,
       senderJid: revokedKey.participant,
       archived: found,
-    },
-  });
-  await deps.ownerInbox.record({
-    accountId: deps.accountId,
-    groupId: group.id,
-    category: 'deleted_message',
-    title: `A message was deleted in "${group.subject}"`,
-    detail: {
-      whatsappMessageId: revokedKey.id,
-      senderJid: revokedKey.participant,
-      archived: found,
+      hasArchivedMedia: Boolean(archivedMedia),
     },
   });
 
+  // `deleted_message_alert_mode` controls where the owner is told, never
+  // whether the deletion itself is detected/archived (that already
+  // happened above, unconditionally) — see docs/SECURITY.md.
+  const alertMode = settings.deletedMessageAlertMode;
+  const mediaNote = archivedMedia ? ' Its media was archived and can still be viewed.' : '';
+
+  if (alertMode === 'dashboard' || alertMode === 'both') {
+    await deps.ownerInbox.record({
+      accountId: deps.accountId,
+      groupId: group.id,
+      category: 'deleted_message',
+      title: `A message was deleted in "${group.subject}"`,
+      detail: {
+        whatsappMessageId: revokedKey.id,
+        senderJid: revokedKey.participant,
+        archived: found,
+        hasArchivedMedia: Boolean(archivedMedia),
+      },
+    });
+  }
+
+  if (alertMode !== 'whatsapp' && alertMode !== 'both') return;
   if (deps.ownerJids.length === 0) return;
   const allowed = await deps.notificationCooldowns.tryNotify(
     deps.accountId,
@@ -111,7 +132,7 @@ export async function handleDeletedMessage(
     try {
       await deps.sender.sendTextMessage(
         ownerJid,
-        `A message was deleted in "${group.subject}".${found ? '' : ' (not archived — monitoring was off when it was sent)'}`,
+        `A message was deleted in "${group.subject}".${found ? mediaNote : ' (not archived — monitoring was off when it was sent)'}`,
       );
     } catch (err) {
       deps.logger.warn({ err, ownerJid }, 'Failed to notify owner of deleted message');
@@ -123,6 +144,7 @@ export interface PrivateDeletedMessageHandlerDeps {
   accountId: string;
   contactsRepository: ContactsRepository;
   messagesRepository: MessagesRepository;
+  mediaArchiveRepository: MediaArchiveRepository;
   auditRepository: AuditRepository;
   ownerInbox: OwnerInboxRepository;
   notificationCooldowns: NotificationCooldownRepository;
@@ -153,6 +175,10 @@ export async function handlePrivateDeletedMessage(
     revokedKey.remoteJid,
     revokedKey.id,
   );
+  const archivedMedia = await deps.mediaArchiveRepository.findByMessageId(
+    deps.accountId,
+    revokedKey.id,
+  );
 
   await deps.auditRepository.recordEvent({
     accountId: deps.accountId,
@@ -163,20 +189,30 @@ export async function handlePrivateDeletedMessage(
       whatsappMessageId: revokedKey.id,
       senderJid: revokedKey.participant,
       archived: found,
-    },
-  });
-  await deps.ownerInbox.record({
-    accountId: deps.accountId,
-    contactId: contact.id,
-    category: 'deleted_message',
-    title: `A private message was deleted in a chat with "${contact.displayName || contact.whatsappJid}"`,
-    detail: {
-      whatsappMessageId: revokedKey.id,
-      senderJid: revokedKey.participant,
-      archived: found,
+      hasArchivedMedia: Boolean(archivedMedia),
     },
   });
 
+  const alertMode = settings.deletedMessageAlertMode;
+  const label = contact.displayName || contact.whatsappJid;
+  const mediaNote = archivedMedia ? ' Its media was archived and can still be viewed.' : '';
+
+  if (alertMode === 'dashboard' || alertMode === 'both') {
+    await deps.ownerInbox.record({
+      accountId: deps.accountId,
+      contactId: contact.id,
+      category: 'deleted_message',
+      title: `A private message was deleted in a chat with "${label}"`,
+      detail: {
+        whatsappMessageId: revokedKey.id,
+        senderJid: revokedKey.participant,
+        archived: found,
+        hasArchivedMedia: Boolean(archivedMedia),
+      },
+    });
+  }
+
+  if (alertMode !== 'whatsapp' && alertMode !== 'both') return;
   if (deps.ownerJids.length === 0) return;
   const allowed = await deps.notificationCooldowns.tryNotify(
     deps.accountId,
@@ -184,12 +220,11 @@ export async function handlePrivateDeletedMessage(
   );
   if (!allowed) return;
 
-  const label = contact.displayName || contact.whatsappJid;
   for (const ownerJid of deps.ownerJids) {
     try {
       await deps.sender.sendTextMessage(
         ownerJid,
-        `A private message was deleted in a chat with "${label}".${found ? '' : ' (not archived — monitoring was off when it was sent)'}`,
+        `A private message was deleted in a chat with "${label}".${found ? mediaNote : ' (not archived — monitoring was off when it was sent)'}`,
       );
     } catch (err) {
       deps.logger.warn({ err, ownerJid }, 'Failed to notify owner of deleted private message');

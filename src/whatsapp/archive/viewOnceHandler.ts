@@ -137,6 +137,7 @@ export async function handleViewOnceMessage(
   await deps.mediaArchiveRepository.record({
     accountId: deps.accountId,
     groupId: group.id,
+    contactId: undefined,
     whatsappMessageId,
     senderJid,
     isViewOnce: true,

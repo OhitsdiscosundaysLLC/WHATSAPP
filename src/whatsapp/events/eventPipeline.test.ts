@@ -89,6 +89,7 @@ function setup() {
     deletedMessageHandlerDeps: {
       groupsRepository,
       messagesRepository,
+      mediaArchiveRepository,
       auditRepository,
       ownerInbox,
       notificationCooldowns,
@@ -99,6 +100,7 @@ function setup() {
     privateDeletedMessageHandlerDeps: {
       contactsRepository,
       messagesRepository,
+      mediaArchiveRepository,
       auditRepository,
       ownerInbox,
       notificationCooldowns,
@@ -107,6 +109,12 @@ function setup() {
       logger: testLogger,
     },
     viewOnceHandlerDeps: {
+      supabase: fake as unknown as SupabaseClient,
+      mediaArchiveRepository,
+      auditRepository,
+      logger: testLogger,
+    },
+    mediaArchiveHandlerDeps: {
       supabase: fake as unknown as SupabaseClient,
       mediaArchiveRepository,
       auditRepository,

@@ -520,7 +520,15 @@
   const ARCHIVE_TOGGLES = [
     { key: 'privateDeletedMessageArchiveEnabled', label: 'Deleted-message archive' },
   ];
+  const MEDIA_ARCHIVE_TOGGLES = [
+    {
+      key: 'mediaArchiveEnabled',
+      label: 'General media archive',
+      help: 'Archives ordinary (non-view-once) images, videos, audio, documents, and stickers in this chat.',
+    },
+  ];
   const archiveToggles = document.getElementById('archive-toggles');
+  const mediaArchiveToggles = document.getElementById('media-archive-toggles');
   const archiveError = document.getElementById('archive-error');
 
   function renderArchiveToggles(settings) {
@@ -539,17 +547,39 @@
     }
   }
 
+  function renderMediaArchiveToggles(settings) {
+    mediaArchiveToggles.innerHTML = '';
+    for (const def of MEDIA_ARCHIVE_TOGGLES) {
+      mediaArchiveToggles.appendChild(
+        renderToggleRow(def, settings, async (key, value) => {
+          archiveError.textContent = '';
+          try {
+            renderMediaArchiveToggles(await patchSettings({ [key]: value }));
+          } catch (err) {
+            if (err.message !== 'unauthenticated') archiveError.textContent = 'Could not save.';
+          }
+        }),
+      );
+    }
+  }
+
   function renderArchive(settings) {
     renderArchiveToggles(settings);
     document.getElementById('retention-days').value = settings.deletedMessageRetentionDays || '';
+    document.getElementById('alert-mode').value =
+      settings.deletedMessageAlertMode || 'archive_only';
   }
 
   document.getElementById('save-archive-btn').addEventListener('click', async (event) => {
     archiveError.textContent = '';
     const raw = document.getElementById('retention-days').value;
+    const alertMode = document.getElementById('alert-mode').value;
     try {
       renderArchive(
-        await patchSettings({ deletedMessageRetentionDays: raw === '' ? null : Number(raw) }),
+        await patchSettings({
+          deletedMessageRetentionDays: raw === '' ? null : Number(raw),
+          deletedMessageAlertMode: alertMode,
+        }),
       );
       flashSaved(event.currentTarget);
     } catch (err) {
@@ -579,6 +609,100 @@
         const time = document.createElement('div');
         time.className = 'activity-time';
         time.textContent = 'deleted ' + fmtDate(m.deletedAt);
+        row.appendChild(label);
+        row.appendChild(detail);
+        row.appendChild(time);
+        list.appendChild(row);
+      }
+    } catch {
+      // non-critical
+    }
+  }
+
+  // Same inline img/video/audio preview (falling back to a download link)
+  // as group.js's media archive section.
+  function renderInlineMediaPreview(container, mimeType, url) {
+    container.innerHTML = '';
+    let el;
+    if (mimeType.startsWith('image/')) {
+      el = document.createElement('img');
+      el.src = url;
+      el.style.maxWidth = '280px';
+      el.style.maxHeight = '280px';
+      el.style.display = 'block';
+      el.style.borderRadius = '6px';
+    } else if (mimeType.startsWith('video/')) {
+      el = document.createElement('video');
+      el.src = url;
+      el.controls = true;
+      el.style.maxWidth = '280px';
+      el.style.maxHeight = '280px';
+    } else if (mimeType.startsWith('audio/')) {
+      el = document.createElement('audio');
+      el.src = url;
+      el.controls = true;
+    }
+    if (el) container.appendChild(el);
+
+    const downloadLink = document.createElement('a');
+    downloadLink.href = url;
+    downloadLink.target = '_blank';
+    downloadLink.rel = 'noopener';
+    downloadLink.textContent = el ? 'Download' : 'Download / open';
+    downloadLink.style.display = 'block';
+    downloadLink.style.marginTop = '4px';
+    downloadLink.style.fontSize = '12px';
+    container.appendChild(downloadLink);
+  }
+
+  async function loadMediaArchive() {
+    const list = document.getElementById('media-list');
+    const empty = document.getElementById('media-empty');
+    try {
+      const res = await api('/api/contacts/' + contactId + '/media-archive');
+      if (!res.ok) return;
+      const data = await res.json();
+      const items = data.media || [];
+      list.innerHTML = '';
+      empty.classList.toggle('hidden', items.length > 0);
+      for (const item of items) {
+        const row = document.createElement('div');
+        row.className = 'activity-item';
+        const label = document.createElement('div');
+        label.className = 'activity-event';
+        label.textContent =
+          (item.isViewOnce ? 'View-once' : 'Media') +
+          ' from ' +
+          item.senderJid +
+          ' (' +
+          item.mimeType +
+          ')';
+        const detail = document.createElement('div');
+        detail.className = 'activity-detail';
+        const viewBtn = document.createElement('button');
+        viewBtn.className = 'btn btn-sm';
+        viewBtn.textContent = 'View';
+        const preview = document.createElement('div');
+        preview.className = 'hidden';
+        preview.style.marginTop = '8px';
+        viewBtn.addEventListener('click', async () => {
+          if (!preview.classList.contains('hidden')) {
+            preview.classList.add('hidden');
+            return;
+          }
+          const urlRes = await api(
+            '/api/contacts/' + contactId + '/media-archive/' + item.id + '/url',
+          );
+          if (!urlRes.ok) return;
+          const urlData = await urlRes.json();
+          renderInlineMediaPreview(preview, item.mimeType, urlData.url);
+          preview.classList.remove('hidden');
+        });
+        detail.appendChild(viewBtn);
+        detail.appendChild(preview);
+        const time = document.createElement('div');
+        time.className = 'activity-time';
+        time.textContent = fmtDate(item.createdAt);
         row.appendChild(label);
         row.appendChild(detail);
         row.appendChild(time);
@@ -921,9 +1045,10 @@
       renderGeneral(data.settings);
       renderAi(data.settings);
       renderArchive(data.settings);
+      renderMediaArchiveToggles(data.settings);
       content.classList.remove('hidden');
 
-      await Promise.all([loadRules(), loadActivity(), loadDeletedMessages()]);
+      await Promise.all([loadRules(), loadActivity(), loadDeletedMessages(), loadMediaArchive()]);
     } catch (err) {
       if (err.message !== 'unauthenticated') {
         loadError.textContent = 'Could not load this contact.';

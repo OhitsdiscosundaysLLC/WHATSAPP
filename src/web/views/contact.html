@@ -396,15 +396,45 @@
                 <option value="90">90 days</option>
               </select>
             </div>
+            <div class="field" style="margin-top: 12px">
+              <label class="field-label" for="alert-mode">Alert mode</label>
+              <select id="alert-mode">
+                <option value="archive_only">Archive only (no owner alert)</option>
+                <option value="dashboard">Dashboard (Owner Inbox) only</option>
+                <option value="whatsapp">WhatsApp message only</option>
+                <option value="both">Both dashboard and WhatsApp</option>
+              </select>
+            </div>
             <button class="btn btn-sm" id="save-archive-btn" style="margin-top: 8px">Save</button>
           </section>
 
-          <section>
+          <section style="margin-bottom: 24px">
             <div class="section-head"><h3 style="margin: 0">Recently Deleted Messages</h3></div>
             <div class="card">
               <div id="deleted-list" class="activity-list"></div>
               <div id="deleted-empty" class="empty-state hidden">
                 <p>No deleted messages archived yet.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="card" style="padding: 20px; margin-bottom: 24px">
+            <div class="section-head" style="margin-bottom: 4px">
+              <h2>General Media Archive</h2>
+            </div>
+            <p class="muted" style="font-size: 13px; margin-top: 0">
+              Opt-in. Archives ordinary incoming images, videos, audio, documents, and stickers in
+              this chat. Requires Monitoring to also be on.
+            </p>
+            <div id="media-archive-toggles"></div>
+          </section>
+
+          <section>
+            <div class="section-head"><h3 style="margin: 0">Archived Media</h3></div>
+            <div class="card">
+              <div id="media-list" class="activity-list"></div>
+              <div id="media-empty" class="empty-state hidden">
+                <p>No media archived yet.</p>
               </div>
             </div>
           </section>
