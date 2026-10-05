@@ -216,10 +216,27 @@
   function renderGeneral(settings) {
     renderGeneralToggles(settings);
     document.getElementById('contact-instructions').value = settings.customInstructions || '';
+    document.getElementById('default-cooldown-seconds').value =
+      settings.defaultCooldownSeconds || 0;
     document.getElementById('owner-notes').value = settings.ownerNotes || '';
     renderQuietHours(settings);
     renderTakeoverStatus(settings);
   }
+
+  document.getElementById('save-default-cooldown-btn').addEventListener('click', async (event) => {
+    settingsError.textContent = '';
+    try {
+      renderGeneral(
+        await patchSettings({
+          defaultCooldownSeconds:
+            Number(document.getElementById('default-cooldown-seconds').value) || 0,
+        }),
+      );
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated') settingsError.textContent = 'Could not save.';
+    }
+  });
 
   document.getElementById('save-owner-notes-btn').addEventListener('click', async (event) => {
     settingsError.textContent = '';

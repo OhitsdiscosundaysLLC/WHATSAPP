@@ -110,6 +110,26 @@
             </div>
 
             <div style="margin-top: 16px">
+              <label class="field-label" for="default-cooldown-seconds"
+                >Default rule cooldown</label
+              >
+              <p class="muted" style="font-size: 12px; margin: 0 0 6px">
+                Seconds a new rule in this group starts with, unless you set a different cooldown
+                for that rule specifically. Never changes the cooldown of rules that already exist.
+              </p>
+              <input
+                type="number"
+                id="default-cooldown-seconds"
+                min="0"
+                max="86400"
+                style="width: 120px"
+              />
+              <button class="btn btn-sm" id="save-default-cooldown-btn" style="margin-top: 8px">
+                Save
+              </button>
+            </div>
+
+            <div style="margin-top: 16px">
               <label class="field-label" for="owner-notes">Owner notes</label>
               <p class="muted" style="font-size: 12px; margin: 0 0 6px">
                 Private notes for your own reference — never sent anywhere, never read by any

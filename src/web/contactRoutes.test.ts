@@ -229,6 +229,35 @@ describe('contact routes — rules', () => {
       .expect(400);
   });
 
+  it("a new rule with no explicit cooldown inherits the contact's defaultCooldownSeconds", async () => {
+    const { cookie, csrfToken } = await login();
+    const contactId = await seedContact('rule-default-cooldown@s.whatsapp.net');
+
+    await request(app)
+      .patch(`/api/contacts/${contactId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ defaultCooldownSeconds: 90 })
+      .expect(200);
+
+    const { cooldownSeconds: _omit, ...bodyWithoutCooldown } = VALID_RULE_BODY;
+    const created = await request(app)
+      .post(`/api/contacts/${contactId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send(bodyWithoutCooldown)
+      .expect(201);
+    expect(created.body.rule.config.cooldownSeconds).toBe(90);
+
+    const overridden = await request(app)
+      .post(`/api/contacts/${contactId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ ...VALID_RULE_BODY, cooldownSeconds: 15 })
+      .expect(201);
+    expect(overridden.body.rule.config.cooldownSeconds).toBe(15);
+  });
+
   it('a rule created for contact A is 404 when accessed through contact B', async () => {
     const { cookie, csrfToken } = await login();
     const contactA = await seedContact('rule-a@s.whatsapp.net');

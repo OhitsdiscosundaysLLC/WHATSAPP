@@ -38,7 +38,10 @@ interface ContactRuleFormInput {
 
 const CONTACT_TRIGGER_TYPES = ['auto_reply', 'escalation'] as const;
 
-function autoReplyFormToConfig(body: ContactRuleFormInput): unknown {
+function autoReplyFormToConfig(
+  body: ContactRuleFormInput,
+  defaultCooldownSeconds: number,
+): unknown {
   const useAi = body.classifier === 'ai';
   const phrases = Array.isArray(body.phrases)
     ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
@@ -63,10 +66,17 @@ function autoReplyFormToConfig(body: ContactRuleFormInput): unknown {
       ? { type: 'AI_REPLY' }
       : { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' };
 
-  return { qualify, action, cooldownSeconds: Number(body.cooldownSeconds ?? 0) };
+  return {
+    qualify,
+    action,
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
+  };
 }
 
-function escalationFormToConfig(body: ContactRuleFormInput): unknown {
+function escalationFormToConfig(
+  body: ContactRuleFormInput,
+  defaultCooldownSeconds: number,
+): unknown {
   const phrases = Array.isArray(body.phrases)
     ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
     : [];
@@ -83,12 +93,19 @@ function escalationFormToConfig(body: ContactRuleFormInput): unknown {
       suppressAutoReply:
         body.suppressAutoReply === undefined ? true : Boolean(body.suppressAutoReply),
     },
-    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
   };
 }
 
-function contactFormToConfig(triggerType: string, body: ContactRuleFormInput): unknown {
-  return triggerType === 'escalation' ? escalationFormToConfig(body) : autoReplyFormToConfig(body);
+/** See groupRoutes.ts's `formToConfig()` for why `defaultCooldownSeconds` is threaded through here. */
+function contactFormToConfig(
+  triggerType: string,
+  body: ContactRuleFormInput,
+  defaultCooldownSeconds: number,
+): unknown {
+  return triggerType === 'escalation'
+    ? escalationFormToConfig(body, defaultCooldownSeconds)
+    : autoReplyFormToConfig(body, defaultCooldownSeconds);
 }
 
 function requireSupabase(res: Response): boolean {
@@ -237,6 +254,9 @@ export function createContactRouter(): Router {
     }
     if (typeof body?.customAiInstructions === 'string') {
       patch.customAiInstructions = body.customAiInstructions;
+    }
+    if (typeof body?.defaultCooldownSeconds === 'number') {
+      patch.defaultCooldownSeconds = body.defaultCooldownSeconds;
     }
     if (typeof body?.aiCooldownSeconds === 'number') {
       patch.aiCooldownSeconds = body.aiCooldownSeconds;
@@ -433,11 +453,12 @@ export function createContactRouter(): Router {
       : 'auto_reply';
 
     try {
+      const settings = await contactsRepository.ensureSettings(id);
       const rule = await rulesRepository.createForContact({
         contactId: id,
         name,
         triggerType,
-        config: contactFormToConfig(triggerType, body ?? {}),
+        config: contactFormToConfig(triggerType, body ?? {}, settings.defaultCooldownSeconds),
       });
 
       const auditRepository = new AuditRepository(supabase);
@@ -463,7 +484,9 @@ export function createContactRouter(): Router {
   router.patch('/:id/rules/:ruleId', requireCsrf, async (req: Request, res: Response) => {
     if (!requireSupabase(res)) return;
     const { id, ruleId } = req.params as { id: string; ruleId: string };
-    const rulesRepository = new RulesRepository(getSupabaseClient());
+    const supabase = getSupabaseClient();
+    const rulesRepository = new RulesRepository(supabase);
+    const contactsRepository = new ContactsRepository(supabase);
 
     const existing = await rulesRepository.getById(ruleId);
     if (!existing || existing.contactId !== id) {
@@ -485,10 +508,12 @@ export function createContactRouter(): Router {
         body?.createInboxItem !== undefined ||
         body?.suppressAutoReply !== undefined
       ) {
-        patch.config = contactFormToConfig(existing.triggerType, {
-          ...(existing.config as ContactRuleFormInput),
-          ...body,
-        });
+        const settings = await contactsRepository.ensureSettings(id);
+        patch.config = contactFormToConfig(
+          existing.triggerType,
+          { ...(existing.config as ContactRuleFormInput), ...body },
+          settings.defaultCooldownSeconds,
+        );
       }
 
       const rule = await rulesRepository.update(ruleId, patch);

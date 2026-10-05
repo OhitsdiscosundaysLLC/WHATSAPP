@@ -198,6 +198,8 @@
   function renderGeneral(settings) {
     renderGeneralToggles(settings);
     document.getElementById('group-instructions').value = settings.customGroupInstructions || '';
+    document.getElementById('default-cooldown-seconds').value =
+      settings.defaultCooldownSeconds || 0;
     document.getElementById('owner-notes').value = settings.ownerNotes || '';
     renderQuietHours(settings);
     renderTakeoverStatus(settings);
@@ -209,6 +211,21 @@
       renderGeneral(
         await patchSettings({
           customGroupInstructions: document.getElementById('group-instructions').value,
+        }),
+      );
+      flashSaved(event.currentTarget);
+    } catch (err) {
+      if (err.message !== 'unauthenticated') settingsError.textContent = 'Could not save.';
+    }
+  });
+
+  document.getElementById('save-default-cooldown-btn').addEventListener('click', async (event) => {
+    settingsError.textContent = '';
+    try {
+      renderGeneral(
+        await patchSettings({
+          defaultCooldownSeconds:
+            Number(document.getElementById('default-cooldown-seconds').value) || 0,
         }),
       );
       flashSaved(event.currentTarget);

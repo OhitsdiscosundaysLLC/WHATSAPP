@@ -198,6 +198,36 @@ describe('group routes — rule CRUD', () => {
     expect(res.body.rule.config.qualify.phrases).toEqual(['congrats', 'congratulations']);
   });
 
+  it("a new rule with no explicit cooldown inherits the group's defaultCooldownSeconds", async () => {
+    const { cookie, csrfToken } = await login();
+    const groupId = await seedGroup('rule-default-cooldown@g.us', 'Rule Default Cooldown Group');
+
+    await request(app)
+      .patch(`/api/groups/${groupId}/settings`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ defaultCooldownSeconds: 120 })
+      .expect(200);
+
+    const { cooldownSeconds: _omit, ...bodyWithoutCooldown } = VALID_RULE_BODY;
+    const created = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send(bodyWithoutCooldown)
+      .expect(201);
+    expect(created.body.rule.config.cooldownSeconds).toBe(120);
+
+    // An explicit per-rule cooldown always overrides the group's default.
+    const overridden = await request(app)
+      .post(`/api/groups/${groupId}/rules`)
+      .set('Cookie', cookie)
+      .set('X-CSRF-Token', csrfToken)
+      .send({ ...VALID_RULE_BODY, cooldownSeconds: 30 })
+      .expect(201);
+    expect(overridden.body.rule.config.cooldownSeconds).toBe(30);
+  });
+
   it('rejects a rule with no qualifying phrases', async () => {
     const { cookie, csrfToken } = await login();
     const groupId = await seedGroup('rule-invalid@g.us', 'Rule Invalid Group');

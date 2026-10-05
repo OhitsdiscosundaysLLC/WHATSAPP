@@ -128,6 +128,77 @@ describe('RuleEngine — response_threshold ("N distinct people respond")', () =
     });
   });
 
+  it('the 5th AND 6th qualifying responders arriving simultaneously (Promise.all) still fires exactly once', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Five people congratulate',
+      triggerType: 'response_threshold',
+      config: FIVE_PERSON_CONFIG,
+    });
+
+    // First 4 sequentially (below threshold), then dispatch the 5th and 6th
+    // concurrently via Promise.all rather than awaiting one before the
+    // other — tryMarkFired()'s atomic `UPDATE ... WHERE fired = false` is
+    // what must make exactly one of these two concurrent evaluations win,
+    // not call ordering.
+    for (const name of ['alice', 'bob', 'carol', 'dave']) {
+      await engine.evaluate(
+        responseEvent({ senderJid: `${name}@s.whatsapp.net`, text: 'Congrats sir' }),
+        'group-1',
+      );
+    }
+    await Promise.all([
+      engine.evaluate(
+        responseEvent({ senderJid: 'erin@s.whatsapp.net', text: 'Congrats sir' }),
+        'group-1',
+      ),
+      engine.evaluate(
+        responseEvent({ senderJid: 'frank@s.whatsapp.net', text: 'Congrats sir' }),
+        'group-1',
+      ),
+    ]);
+
+    expect(sender.sentTo).toHaveLength(1);
+  });
+
+  it('the exact same response event dispatched twice concurrently (duplicate delivery) counts as ONE person reaching the threshold, never fires twice', async () => {
+    const fake = new FakeSupabaseClient();
+    const sender = fakeSender();
+    const { engine, deps } = buildEngine(fake, sender);
+    await deps.rulesRepository.create({
+      groupId: 'group-1',
+      name: 'Five people congratulate',
+      triggerType: 'response_threshold',
+      config: FIVE_PERSON_CONFIG,
+    });
+
+    for (const name of ['alice', 'bob', 'carol', 'dave']) {
+      await engine.evaluate(
+        responseEvent({ senderJid: `${name}@s.whatsapp.net`, text: 'Congrats sir' }),
+        'group-1',
+      );
+    }
+    // Same sender, same message id, dispatched twice concurrently as the
+    // 5th (threshold-reaching) responder — WhatsApp redelivery or a
+    // duplicate webhook must count as exactly ONE distinct person (the
+    // unique (rule_match_id, sender_jid) constraint is what actually
+    // prevents the duplicate from being double-counted in production), and
+    // reaching the threshold via a racing duplicate must still fire only once.
+    const duplicateEvent = responseEvent({
+      senderJid: 'erin@s.whatsapp.net',
+      text: 'Congrats sir',
+    });
+    await Promise.all([
+      engine.evaluate(duplicateEvent, 'group-1'),
+      engine.evaluate(duplicateEvent, 'group-1'),
+    ]);
+
+    expect(sender.sentTo).toHaveLength(1);
+  });
+
   it('does NOT reply individually to each person — only one send for the whole threshold', async () => {
     const fake = new FakeSupabaseClient();
     const sender = fakeSender();

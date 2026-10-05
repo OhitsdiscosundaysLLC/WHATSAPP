@@ -56,6 +56,12 @@ describe('MessagesRepository', () => {
     expect(await repo.markProcessed(event({ accountId: 'acct-2' }))).toBe(true);
   });
 
+  it('two concurrent markProcessed calls for the exact same event (Promise.all, not sequential) still let exactly one through', async () => {
+    const { repo } = withFake();
+    const [a, b] = await Promise.all([repo.markProcessed(event()), repo.markProcessed(event())]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+
   it('store() persists a normalized message when monitoring is enabled', async () => {
     const { repo, fake } = withFake();
     await repo.store(event({ text: 'Congrats sir' }), { groupId: 'group-uuid-1' });

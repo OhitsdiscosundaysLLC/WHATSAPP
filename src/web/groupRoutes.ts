@@ -60,7 +60,7 @@ interface RuleFormInput {
   suppressAutoReply?: unknown;
 }
 
-function ruleFormToConfig(body: RuleFormInput): unknown {
+function ruleFormToConfig(body: RuleFormInput, defaultCooldownSeconds: number): unknown {
   const phrases = Array.isArray(body.phrases)
     ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
     : [];
@@ -79,11 +79,11 @@ function ruleFormToConfig(body: RuleFormInput): unknown {
     qualify: { mode: matchMode, phrases },
     threshold: Number(body.threshold),
     action,
-    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
   };
 }
 
-function autoReplyFormToConfig(body: RuleFormInput): unknown {
+function autoReplyFormToConfig(body: RuleFormInput, defaultCooldownSeconds: number): unknown {
   const useAi = body.classifier === 'ai';
   const phrases = Array.isArray(body.phrases)
     ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
@@ -108,10 +108,14 @@ function autoReplyFormToConfig(body: RuleFormInput): unknown {
       ? { type: 'AI_REPLY' }
       : { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' };
 
-  return { qualify, action, cooldownSeconds: Number(body.cooldownSeconds ?? 0) };
+  return {
+    qualify,
+    action,
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
+  };
 }
 
-function moderationFormToConfig(body: RuleFormInput): unknown {
+function moderationFormToConfig(body: RuleFormInput, defaultCooldownSeconds: number): unknown {
   const bannedPhrases = Array.isArray(body.bannedPhrases)
     ? body.bannedPhrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
     : [];
@@ -133,11 +137,11 @@ function moderationFormToConfig(body: RuleFormInput): unknown {
       detectLinks: Boolean(body.detectLinks),
     },
     action,
-    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
   };
 }
 
-function escalationFormToConfig(body: RuleFormInput): unknown {
+function escalationFormToConfig(body: RuleFormInput, defaultCooldownSeconds: number): unknown {
   const phrases = Array.isArray(body.phrases)
     ? body.phrases.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
     : [];
@@ -154,30 +158,44 @@ function escalationFormToConfig(body: RuleFormInput): unknown {
       suppressAutoReply:
         body.suppressAutoReply === undefined ? true : Boolean(body.suppressAutoReply),
     },
-    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
   };
 }
 
-function participantJoinedFormToConfig(body: RuleFormInput): unknown {
+function participantJoinedFormToConfig(
+  body: RuleFormInput,
+  defaultCooldownSeconds: number,
+): unknown {
   return {
     action: { type: 'SEND_MESSAGE', message: typeof body.message === 'string' ? body.message : '' },
-    cooldownSeconds: Number(body.cooldownSeconds ?? 0),
+    cooldownSeconds: Number(body.cooldownSeconds ?? defaultCooldownSeconds),
   };
 }
 
-function formToConfig(triggerType: string, body: RuleFormInput): unknown {
+/**
+ * `defaultCooldownSeconds` (`group_settings`/`contact_settings`) is the
+ * fallback used here — a new rule created without an explicit cooldown in
+ * its form submission inherits the group's/contact's configured default
+ * instead of silently landing on each trigger-type schema's hardcoded `0`.
+ * An explicit `cooldownSeconds` in the form always wins.
+ */
+function formToConfig(
+  triggerType: string,
+  body: RuleFormInput,
+  defaultCooldownSeconds: number,
+): unknown {
   switch (triggerType) {
     case 'auto_reply':
-      return autoReplyFormToConfig(body);
+      return autoReplyFormToConfig(body, defaultCooldownSeconds);
     case 'moderation':
-      return moderationFormToConfig(body);
+      return moderationFormToConfig(body, defaultCooldownSeconds);
     case 'escalation':
-      return escalationFormToConfig(body);
+      return escalationFormToConfig(body, defaultCooldownSeconds);
     case 'participant_joined':
-      return participantJoinedFormToConfig(body);
+      return participantJoinedFormToConfig(body, defaultCooldownSeconds);
     case 'response_threshold':
     default:
-      return ruleFormToConfig(body);
+      return ruleFormToConfig(body, defaultCooldownSeconds);
   }
 }
 
@@ -550,11 +568,12 @@ export function createGroupRouter(): Router {
         : 'response_threshold';
 
     try {
+      const settings = await groupsRepository.ensureSettings(id);
       const rule = await rulesRepository.create({
         groupId: id,
         name,
         triggerType,
-        config: formToConfig(triggerType, body ?? {}),
+        config: formToConfig(triggerType, body ?? {}, settings.defaultCooldownSeconds),
       });
 
       const auditRepository = new AuditRepository(supabase);
@@ -581,6 +600,7 @@ export function createGroupRouter(): Router {
     const { id, ruleId } = req.params as { id: string; ruleId: string };
     const supabase = getSupabaseClient();
     const rulesRepository = new RulesRepository(supabase);
+    const groupsRepository = new GroupsRepository(supabase);
 
     const existing = await rulesRepository.getById(ruleId);
     if (!existing || existing.groupId !== id) {
@@ -603,10 +623,12 @@ export function createGroupRouter(): Router {
         body?.bannedPhrases !== undefined ||
         body?.aiInstructions !== undefined
       ) {
-        patch.config = formToConfig(existing.triggerType, {
-          ...existing.config,
-          ...body,
-        } as RuleFormInput);
+        const settings = await groupsRepository.ensureSettings(id);
+        patch.config = formToConfig(
+          existing.triggerType,
+          { ...existing.config, ...body } as RuleFormInput,
+          settings.defaultCooldownSeconds,
+        );
       }
 
       const rule = await rulesRepository.update(ruleId, patch);

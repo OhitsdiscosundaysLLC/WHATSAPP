@@ -52,6 +52,13 @@ describe('RuleStateRepository', () => {
     expect(second).toBe(false);
   });
 
+  it('two concurrent tryMarkFired calls (Promise.all, not sequential) still let exactly one win', async () => {
+    const { repo } = withFake();
+    const match = await repo.getOrCreateMatch('rule-1', 'TARGET');
+    const [a, b] = await Promise.all([repo.tryMarkFired(match.id), repo.tryMarkFired(match.id)]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+
   it('cooldown: no last-fired record means no cooldown is active', async () => {
     const { repo } = withFake();
     expect(await repo.getLastFiredAt('rule-1')).toBeUndefined();
